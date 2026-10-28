@@ -5,3 +5,9 @@ dist/
 *.log
 .vite/
 .DS_Store
+
+# TS build artifacts
+tsconfig.tsbuildinfo
+src/**/*.js
+!scripts/**/*.js
+!vite.config.ts
