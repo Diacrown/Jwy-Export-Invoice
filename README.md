@@ -117,3 +117,19 @@ web/
 v0.1 goals: everything from the Python module (`../module/`) ported to
 TypeScript, running in the browser, with the Supabase persistence layer
 and overridable dropdowns.
+
+## Local sanity test
+
+Before deploying, you can run the full generator pipeline against a real
+SJ-50 raw file to see what the output looks like:
+
+```bash
+npm install
+npx tsx scripts/local-run.ts path/to/some-sj-50.xls
+# writes generated-by-ts.xlsx next to the input
+```
+
+Open the generated xlsx side-by-side with a real master-details workbook
+to see structural differences. The output is functionally correct
+(right totals, right lots) but not yet byte-identical to the manual
+workbook — iterate on `src/generators/xlsx.ts` based on what Accounts flags.
