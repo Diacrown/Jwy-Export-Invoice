@@ -57,14 +57,40 @@ function addr(row: number, col: number): string {
   return XLSX.utils.encode_cell({ r: row - 1, c: col - 1 });
 }
 
-/** Scan for the row holding Sr. No. + Stock No. */
-function findHeaderRow(ws: XLSX.WorkSheet, lastRow: number, lastCol: number): number {
-  for (let r = 1; r <= Math.min(lastRow, 50); r++) {
+/** Scan for the row holding Sr. No. + Stock No. If the file turns out to be
+ *  the running gold ledger ("SJ-50 updated ... cust copy") or a vendor invoice,
+ *  throw a specific error instead of the generic "header not found". */
+const LEDGER_MARKERS = ["inward date", "raw material", "pure gold balance", "stock ledger"];
+const VENDOR_MARKERS = ["making charges", "sgst", "cgst", "igst", "tax invoice"];
+
+function findHeaderRow(ws: XLSX.WorkSheet, lastRow: number, lastCol: number, sheetName: string): number {
+  let looksLikeLedger = false;
+  let looksLikeVendor = false;
+  const sn = (sheetName ?? "").toLowerCase();
+  if (sn.includes("raw material") || sn.includes("stock ledger") || sn.includes("sale")) looksLikeLedger = true;
+
+  for (let r = 1; r <= Math.min(lastRow, 60); r++) {
     const rowVals: string[] = [];
     for (let c = 1; c <= Math.min(lastCol, 40); c++) rowVals.push(cellLower(ws, addr(r, c)));
     if (HDR_SR_NO.some((h) => rowVals.includes(h)) && HDR_STOCK.some((h) => rowVals.includes(h))) return r;
+    for (const v of rowVals) {
+      if (LEDGER_MARKERS.some((m) => v.includes(m))) looksLikeLedger = true;
+      if (VENDOR_MARKERS.some((m) => v.includes(m))) looksLikeVendor = true;
+    }
   }
-  throw new Error("Could not find SJ-50 header row (expecting 'Sr. No.' + 'Stock No.')");
+  if (looksLikeLedger) {
+    throw new Error(
+      "This looks like the running gold stock ledger (e.g. 'SJ-50 updated DD.MM.YYYY cust copy.xls'), " +
+      "not a per-shipment packing list. Please upload a file named 'SJ-50 DCJ <date> <N> pcs.xls' instead."
+    );
+  }
+  if (looksLikeVendor) {
+    throw new Error(
+      "This looks like an SDJ-JB vendor tax invoice, not an SJ-50 packing list. " +
+      "Upload it in the second slot (Optional: SDJ-JB vendor invoice), and use an SJ-50 file in the main slot."
+    );
+  }
+  throw new Error("Could not find SJ-50 header row (expecting 'Sr. No.' + 'Stock No.' in the top rows).");
 }
 
 function colMatching(ws: XLSX.WorkSheet, headerRow: number, aliases: string[], lastCol: number): number | null {
@@ -94,14 +120,15 @@ function detectShapeColumns(ws: XLSX.WorkSheet, headerRow: number, lastCol: numb
 export async function parseSj50(file: Blob): Promise<Piece[]> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
+  const firstSheet = wb.SheetNames[0];
+  const ws = wb.Sheets[firstSheet];
   const ref = ws["!ref"];
   if (!ref) throw new Error("SJ-50: empty sheet");
   const range = XLSX.utils.decode_range(ref);
   const lastRow = range.e.r + 1;
   const lastCol = range.e.c + 1;
 
-  const headerRow = findHeaderRow(ws, lastRow, lastCol);
+  const headerRow = findHeaderRow(ws, lastRow, lastCol, firstSheet);
 
   const colSrNo = colMatching(ws, headerRow, HDR_SR_NO, lastCol);
   const colStock = colMatching(ws, headerRow, HDR_STOCK, lastCol);

@@ -201,6 +201,21 @@ function AppInner() {
     }));
   }
 
+  /** Per-piece tuning (gap §3.E): AR base-gold-lock and AZ fixed add-on. */
+  function updatePieceTuning(stock: string, patch: { base_gold_lock_usd?: string; fixed_addon_usd?: string }) {
+    setPieces((prev) => prev.map((p) => {
+      if (p.stock_no !== stock) return p;
+      const dec = (v?: string) => (v !== undefined ? (v ? new Decimal(v) : null) : undefined);
+      const base = dec(patch.base_gold_lock_usd);
+      const addon = dec(patch.fixed_addon_usd);
+      return {
+        ...p,
+        base_gold_lock_usd: base === undefined ? p.base_gold_lock_usd : base,
+        fixed_addon_usd: addon === undefined ? p.fixed_addon_usd : addon,
+      };
+    }));
+  }
+
   async function doPreview() {
     if (!settings || !hsnTable) { toast.warn("Config not loaded yet", "Try again in a moment."); return; }
     const errs = validateForm(form);
@@ -366,7 +381,7 @@ function AppInner() {
           pieces.length === 0 ? (
             <Empty icon="📦" title="No pieces loaded" body="Upload an SJ-50 file first." />
           ) : (
-            <PiecesPane pieces={pieces} updatePieceDiamond={updatePieceDiamond} onContinue={() => setTab("form")} />
+            <PiecesPane pieces={pieces} updatePieceDiamond={updatePieceDiamond} updatePieceTuning={updatePieceTuning} onContinue={() => setTab("form")} />
           )
         )}
         {tab === "form" && (
@@ -450,19 +465,33 @@ function UploadPane(props: {
   );
 }
 
-function PiecesPane(props: { pieces: Piece[]; updatePieceDiamond: (stock: string, patch: Record<string, string>) => void; onContinue: () => void; }) {
-  const { pieces, updatePieceDiamond, onContinue } = props;
+function PiecesPane(props: {
+  pieces: Piece[];
+  updatePieceDiamond: (stock: string, patch: Record<string, string>) => void;
+  updatePieceTuning: (stock: string, patch: Record<string, string>) => void;
+  onContinue: () => void;
+}) {
+  const { pieces, updatePieceDiamond, updatePieceTuning, onContinue } = props;
   return (
     <div>
       <h2>Pieces (parsed from SJ-50)</h2>
-      <p className="hint">Fill diamond cert / grade / rate per piece where the raw file didn&apos;t carry them. Auto-saves on blur.</p>
+      <p className="hint">Fill diamond details and per-piece tuning values where the raw file didn&apos;t carry them. Auto-saves on blur.</p>
+      <div className="finding soft" style={{ marginBottom: 12 }}>
+        <strong>About &quot;Base lock USD&quot; (AR)</strong> — in the manual workbook, Accounts types a per-piece
+        base-gold-lock value (cell AR / AQ) to control value addition %. Leave blank to let the module
+        compute without the lock; the value-addition ratio will be higher than usual. Set it to the piece&apos;s
+        base cost from the prior quote or your tuned value to match the manual output.
+      </div>
       <div className="table-wrap cards">
         <table>
           <thead>
             <tr>
               <th>Stock</th><th>Style</th><th>Item</th><th>KT</th><th>Color</th><th>Qty</th>
               <th>Gross</th><th>Dia pcs</th><th>Dia cts</th>
-              <th>Dia certificate</th><th>Dia grade</th><th>Dia USD/ct</th><th>HSN hint</th>
+              <th>Dia certificate</th><th>Dia grade</th><th>Dia USD/ct</th>
+              <th>Base lock USD <span className="muted">(AR)</span></th>
+              <th>Addon USD <span className="muted">(AZ)</span></th>
+              <th>HSN hint</th>
             </tr>
           </thead>
           <tbody>
@@ -487,6 +516,12 @@ function PiecesPane(props: { pieces: Piece[]; updatePieceDiamond: (stock: string
                              onBlur={(e) => updatePieceDiamond(p.stock_no, { color_clarity: e.target.value })} /></td>
                   <td data-label="USD/ct"><input placeholder="60.00" defaultValue={d0?.rate_usd_per_ct?.toString() ?? ""}
                              onBlur={(e) => updatePieceDiamond(p.stock_no, { rate_usd_per_ct: e.target.value })} /></td>
+                  <td data-label="Base lock USD"><input placeholder="(blank = 0)" inputMode="decimal"
+                             defaultValue={p.base_gold_lock_usd?.toString() ?? ""}
+                             onBlur={(e) => updatePieceTuning(p.stock_no, { base_gold_lock_usd: e.target.value })} /></td>
+                  <td data-label="Addon USD"><input placeholder="(default 10)" inputMode="decimal"
+                             defaultValue={p.fixed_addon_usd?.toString() ?? ""}
+                             onBlur={(e) => updatePieceTuning(p.stock_no, { fixed_addon_usd: e.target.value })} /></td>
                   <td data-label="HSN hint">{p.jewellery_type.replace("gold_", "")}</td>
                 </tr>
               );
