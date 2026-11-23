@@ -1,4 +1,6 @@
 /** Loading skeleton primitives + empty-state card. */
+import type { ReactNode } from "react";
+import { FileText, type LucideIcon } from "lucide-react";
 
 export function Skel({ w = "100%", h, className = "" }: { w?: string | number; h?: string; className?: string }) {
   return (
@@ -27,19 +29,19 @@ export function SkelRows({ count = 4 }: { count?: number }) {
 }
 
 export function Empty({
-  icon = "📄",
+  icon: Icon = FileText,
   title,
   body,
   action,
 }: {
-  icon?: string;
+  icon?: LucideIcon;
   title: string;
-  body?: string;
-  action?: React.ReactNode;
+  body?: ReactNode;
+  action?: ReactNode;
 }) {
   return (
     <div className="empty">
-      <div className="empty-icon">{icon}</div>
+      <div className="empty-icon"><Icon size={22} /></div>
       <h3>{title}</h3>
       {body && <p>{body}</p>}
       {action}

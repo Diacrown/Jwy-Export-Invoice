@@ -4,6 +4,7 @@
  * Enter picks. Touch-friendly (44px min targets). Filter box auto-focuses.
  */
 import { useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, Plus } from "lucide-react";
 
 import type { LookupKey, LookupOption } from "../storage/lookups";
 import { fetchLookup, insertLookup } from "../storage/lookups";
@@ -27,6 +28,8 @@ export function Dropdown({ lookupKey, value, onChange, allowAdd = true, placehol
   const [focusedIdx, setFocusedIdx] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const close = () => { setOpen(false); setFilter(""); triggerRef.current?.focus(); };
 
   useEffect(() => {
     let active = true;
@@ -69,14 +72,14 @@ export function Dropdown({ lookupKey, value, onChange, allowAdd = true, placehol
   }
 
   function onKey(e: React.KeyboardEvent) {
-    if (e.key === "Escape") { setOpen(false); return; }
+    if (e.key === "Escape") { e.stopPropagation(); close(); return; }
     if (e.key === "ArrowDown") { e.preventDefault(); setFocusedIdx((i) => Math.min(i + 1, totalRows - 1)); return; }
     if (e.key === "ArrowUp") { e.preventDefault(); setFocusedIdx((i) => Math.max(0, i - 1)); return; }
     if (e.key === "Enter") {
       e.preventDefault();
       if (focusedIdx < filtered.length) {
         const o = filtered[focusedIdx];
-        onChange(o); setOpen(false); setFilter("");
+        onChange(o); close();
       } else if (canAddExact) {
         addNew(filter);
       }
@@ -86,20 +89,27 @@ export function Dropdown({ lookupKey, value, onChange, allowAdd = true, placehol
   return (
     <div className="dropdown" ref={ref}>
       <button
+        ref={triggerRef}
         type="button"
         className={`dropdown-trigger ${invalid ? "invalid" : ""}`}
         onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => { if (e.key === "ArrowDown" && !open) { e.preventDefault(); setOpen(true); } }}
         disabled={loading}
-        aria-haspopup="listbox" aria-expanded={open}
+        aria-haspopup="listbox" aria-expanded={open} aria-invalid={invalid || undefined}
       >
-        {loading ? "loading…" : current?.label ?? <span className="muted">{placeholder ?? "— pick —"}</span>}
+        {loading
+          ? <span className="placeholder">Loading…</span>
+          : current ? <span className="label">{current.label}</span>
+          : <span className="placeholder">{placeholder ?? "Select…"}</span>}
+        <ChevronDown size={16} />
       </button>
       {open && (
-        <div className="dropdown-menu" role="listbox">
+        <div className="dropdown-menu" role="listbox" onMouseDown={(e) => { if (e.target !== inputRef.current) e.preventDefault(); }}>
           <input
             ref={inputRef}
             className="dropdown-filter"
-            placeholder="type to filter or add"
+            placeholder={allowAdd ? "Search or add new…" : "Search…"}
+            onBlur={(e) => { if (!ref.current?.contains(e.relatedTarget as Node)) setOpen(false); }}
             value={filter}
             onChange={(e) => { setFilter(e.target.value); setFocusedIdx(0); }}
             onKeyDown={onKey}
@@ -108,11 +118,12 @@ export function Dropdown({ lookupKey, value, onChange, allowAdd = true, placehol
             <div
               key={o.id}
               className={`dropdown-item ${i === focusedIdx ? "focused" : ""} ${o.id === value ? "selected" : ""}`}
-              onClick={() => { onChange(o); setOpen(false); setFilter(""); }}
+              onClick={() => { onChange(o); close(); }}
               onMouseEnter={() => setFocusedIdx(i)}
               role="option" aria-selected={o.id === value}
             >
               {o.label}
+              {o.id === value && <Check size={15} className="tick" />}
             </div>
           ))}
           {canAddExact && (
@@ -121,11 +132,11 @@ export function Dropdown({ lookupKey, value, onChange, allowAdd = true, placehol
               onClick={() => addNew(filter)}
               onMouseEnter={() => setFocusedIdx(filtered.length)}
             >
-              + Add &quot;{filter.trim()}&quot;
+              <Plus size={15} /> Add &quot;{filter.trim()}&quot;
             </div>
           )}
           {!filtered.length && !canAddExact && (
-            <div className="dropdown-item muted" style={{ cursor: "default" }}>no matches</div>
+            <div className="dropdown-item none">No matches</div>
           )}
         </div>
       )}

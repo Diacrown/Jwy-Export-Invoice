@@ -119,7 +119,7 @@ web/
     ├── storage/                      Supabase CRUD wrappers
     ├── hooks/                        React data hooks
     ├── components/                   UI
-    └── styles/                       VS-Code-light theme
+    └── styles/                       DIACROWN finance-console theme
 ```
 
 v0.1 goals: everything from the Python module (`../module/`) ported to

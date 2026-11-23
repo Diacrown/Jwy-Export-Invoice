@@ -6,8 +6,11 @@
  *   toast.error("Upload failed", err.message);
  */
 import { createContext, useCallback, useContext, useEffect, useState, useMemo } from "react";
+import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from "lucide-react";
 
 export type ToastKind = "success" | "warn" | "error" | "info";
+
+const ICONS = { success: CircleCheck, warn: TriangleAlert, error: CircleAlert, info: Info } as const;
 
 export interface Toast {
   id: number;
@@ -59,15 +62,19 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <Ctx.Provider value={api}>
       {children}
       <div className="toasts" role="status" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.kind}`}>
-            <div className="toast-head">
-              <span>{t.title}</span>
-              <button className="toast-close" onClick={() => dismiss(t.id)} aria-label="Dismiss">×</button>
+        {toasts.map((t) => {
+          const Icon = ICONS[t.kind];
+          return (
+            <div key={t.id} className={`toast ${t.kind}`}>
+              <Icon className="toast-ico" size={18} />
+              <div className="toast-text">
+                <div className="toast-title">{t.title}</div>
+                {t.body && <div className="toast-body">{t.body}</div>}
+              </div>
+              <button className="toast-close" onClick={() => dismiss(t.id)} aria-label="Dismiss"><X size={15} /></button>
             </div>
-            {t.body && <div style={{ color: "var(--fg)", opacity: 0.85 }}>{t.body}</div>}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Ctx.Provider>
   );

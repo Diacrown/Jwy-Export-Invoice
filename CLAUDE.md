@@ -61,12 +61,15 @@ src/
     lookups.ts               generic dropdown lookup CRUD
     invoices.ts              persists invoices + lots + pieces + diamonds + audit
   components/
-    App.tsx (one file up)    top-level shell + 6 tabs
-    Dashboard.tsx            past-invoice list with filter/download/void
+    App.tsx (one file up)    auth gate, invoice-wizard state + actions, view routing
+    Shell.tsx                navy sidebar (top bar < 960px) + wizard Stepper
+    ui.tsx                   Card, Field, Badge, Callout, Kpi, ActionBar, ConfirmDialog, fmt* helpers
+    steps/                   Upload / Pieces / Details / Review / Generate step screens + form.ts (form state, validation)
+    Dashboard.tsx            Invoices list: KPIs, search/status/country filters, download, void (dialog)
     Settings.tsx             app_settings / base-lock touch / HSN / labour-rate editor
     Dropdown.tsx             overridable dropdown with inline Add-new
     Toast.tsx, Skeleton.tsx  UX primitives
-  styles/index.css           VS-Code-light theme, mobile card-stack tables
+  styles/index.css           DIACROWN finance-console theme (tokens on :root), mobile card-stack tables
 supabase/schema.sql          20 tables + RLS + seeded lookups — paste into SQL editor
 docs/
   01-workflow-analysis.md    business problem, formulas, HSN rules
@@ -160,7 +163,7 @@ labels swapped; C&F adds discount/commission instead of subtracting.
 | Business logic | ✅ rules above; reconciles to EXP535 and EXP546 |
 | Generator | ✅ EXP535 layout: IF-chain buyer/bank staging (Q11/Q24), lot blocks, totals, A/C OF GOLD, PURCHASE DETAILS ledger, live CUSTOMS PL formulas incl. AR→BA |
 | Validators | ✅ V1–V16 incl. V4 split totals, per-lot V5, V8 FX drift, V10, V12 gold balance, V16 config |
-| UI | ✅ include/exclude pieces, per-row studding edit + split, stones-register autofill, auto AR shown with override, labour FX / base rate / opening stock / commission fields, per-piece MFG breakdown on Review, Settings tab |
+| UI | ✅ Finance-console design (navy sidebar, gold accent, Inter): 5-step wizard with stepper + sticky action bar showing running stats; drag-and-drop upload; Pieces with search, "Needs input" filter, progress, collapsible cards, stones-register autofill, split rows, AR/AZ tuning tucked away; Details in cards with live errors and an Advanced section; Review with status banner, KPIs, lot totals, readable checks; Generate with re-download; Invoices list with KPIs and void dialog; Settings in cards |
 | Persistence | ✅ re-generate replaces the earlier save; gold purchase + drawdown ledger; stones register with times_seen; base lock used per piece |
 | Tests | ✅ `npm test` (node:test via tsx) |
 
@@ -187,7 +190,13 @@ labels swapped; C&F adds discount/commission instead of subtracting.
   the client — that key never leaves Supabase.
 - Mobile-first: new tables use the `.table-wrap.cards` pattern with
   `data-label` attributes on every `<td>`.
-- Keyboard shortcut: Ctrl/Cmd+Enter advances the current tab.
+- Keyboard shortcut: Ctrl/Cmd+Enter advances the current wizard step.
+- Design: colours, radii and shadows are CSS tokens on `:root` in
+  `styles/index.css` — use them, don't hard-code hex. Build screens from the
+  `components/ui.tsx` primitives; icons come from `lucide-react` (no emoji).
+  Inter is self-hosted via `@fontsource-variable/inter` (the CSP only allows
+  `font-src 'self'`). Money/weights shown with `fmtUsd` / `fmtInr` / `fmtNum`
+  (tabular figures).
 - Any change to `src/lib/*` or the generator: run `npm test` (reconciles
   against the real EXP535 / EXP546 workbooks).
 - `tsconfig.json` has `noEmit` — never let `tsc` write `.js` next to the

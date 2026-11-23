@@ -11,8 +11,10 @@ import {
   loadHsnTable, saveHsnEntry,
   loadLaborRates, saveLaborRate,
 } from "../storage/settings";
+import { Building2, Coins, Hammer, Landmark } from "lucide-react";
 import { useErrorToast, useToast } from "./Toast";
 import { Empty, SkelRows } from "./Skeleton";
+import { Callout, Card } from "./ui";
 
 // ───────────────────────── parsing + validation helpers ─────────────────────────
 
@@ -287,15 +289,15 @@ export function Settings(props: { canEdit: boolean; onSaved: () => void }): JSX.
   if (status === "loading") {
     return (
       <div>
-        <h2>Settings</h2>
-        <div className="table-wrap"><SkelRows count={6} /></div>
+        <SettingsHead />
+        <div className="card"><SkelRows count={6} /></div>
       </div>
     );
   }
   if (status === "error" || !appBase || !appDraft || !appBaseDraft) {
     return (
       <div>
-        <h2>Settings</h2>
+        <SettingsHead />
         <Empty
           title="Could not load settings"
           body="Check your connection, then try again."
@@ -596,16 +598,15 @@ export function Settings(props: { canEdit: boolean; onSaved: () => void }): JSX.
 
   return (
     <div className="settings">
-      <h2>Settings</h2>
-      <p className="hint">Values here feed every new invoice. Saved invoices keep the values they were generated with.</p>
+      <SettingsHead />
       {locked && (
-        <div className="finding soft" style={{ marginBottom: 12 }}>
-          Read-only. Only users with role <code>accounts</code> or <code>admin</code> can edit settings.
+        <div style={{ marginBottom: 16 }}>
+          <Callout tone="warn" title="Read-only">Only users with the <code>accounts</code> or <code>admin</code> role can change settings.</Callout>
         </div>
       )}
 
       {/* 1 ── exporter & invoice defaults */}
-      <h3 className="section">Exporter &amp; invoice defaults</h3>
+      <Card icon={Building2} title="Exporter & invoice defaults" desc="Printed on every invoice: exporter block, LUT, signatory, payment instructions and declarations.">
       <div className="grid">{APP_FIELDS.map(renderAppField)}</div>
       {canEdit && (
         <div className="actions">
@@ -619,15 +620,12 @@ export function Settings(props: { canEdit: boolean; onSaved: () => void }): JSX.
           </button>
         </div>
       )}
+      </Card>
 
       {/* 2 ── base-gold lock */}
-      <h3 className="section">Base-gold lock (AR)</h3>
-      <p className="hint">
-        AR = round(SJ-50 net wt, 2) × touch[KT] × base rate (USD per gram of pure gold). The base rate
-        defaults to gold rate (USD/oz) × this ratio, rounded to 3 dp — 0.0321199 reproduces EXP535
-        (139.395 at 4339.8413) and EXP615 (135.176 at 4208.4878). Each invoice can still override it.
-        Touch: 9 → 0.385, 14 → 0.595, 18 → 0.76.
-      </p>
+      <Card icon={Coins} title="Base-gold lock (AR)"
+            desc={<>AR = net wt (2 dp) × touch for the KT × base rate. The base rate is the invoice gold rate (USD/oz) × this ratio, to 3 dp —
+              0.0321199 gives 139.395 at 4339.8413 (EXP535) and 135.176 at 4208.4878 (EXP615). Each invoice can override it.</>}>
       <div className="grid">
         <label>Base-lock ratio (USD/g pure per USD/oz gold) *
           <input className={touchErrors.rate ? "invalid" : undefined} value={rateDraft} inputMode="decimal"
@@ -679,7 +677,7 @@ export function Settings(props: { canEdit: boolean; onSaved: () => void }): JSX.
         </table>
       </div>
       {touchErrors.general && <div className="err">{touchErrors.general}</div>}
-      {example && <p className="hint-small">{example}</p>}
+      {example && <p className="example">{example}</p>}
       {canEdit && (
         <div className="actions">
           <button className="btn" disabled={anyBusy}
@@ -695,10 +693,10 @@ export function Settings(props: { canEdit: boolean; onSaved: () => void }): JSX.
           <button className="btn" disabled={!touchDirty || anyBusy} onClick={discardTouch}>Discard changes</button>
         </div>
       )}
+      </Card>
 
       {/* 3 ── HSN */}
-      <h3 className="section">HSN table</h3>
-      <p className="hint">Wastage and value addition are decimals (0.04 = 4%).</p>
+      <Card icon={Landmark} title="HSN codes" desc="Code and description per jewellery type. Wastage and value addition are decimals (0.04 = 4 %).">
       {hsnTypes.length === 0 ? (
         <p className="hint">No HSN rows found — seed <code>hsn_table</code> from <code>supabase/schema.sql</code>.</p>
       ) : (
@@ -732,10 +730,11 @@ export function Settings(props: { canEdit: boolean; onSaved: () => void }): JSX.
           </table>
         </div>
       )}
+      </Card>
 
       {/* 4 ── labour rates */}
-      <h3 className="section">Labour rates</h3>
-      <p className="hint">INR per gram, per KT. Saving keeps history: the current rate is retired and a new one becomes current.</p>
+      <Card icon={Hammer} title="Labour rates"
+            desc="₹ per gram, per KT — used only when the packing list has no Labour value. Saving keeps history: the old rate is retired.">
       <div className="table-wrap cards settings-narrow">
         <table>
           <thead>
@@ -799,6 +798,18 @@ export function Settings(props: { canEdit: boolean; onSaved: () => void }): JSX.
             )}
           </tbody>
         </table>
+      </div>
+      </Card>
+    </div>
+  );
+}
+
+function SettingsHead() {
+  return (
+    <div className="page-head">
+      <div>
+        <h1 className="page-title">Settings</h1>
+        <p className="page-sub">These values feed every new invoice. Invoices already saved keep the values they were generated with.</p>
       </div>
     </div>
   );
