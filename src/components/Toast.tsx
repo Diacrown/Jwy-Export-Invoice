@@ -5,7 +5,7 @@
  *   toast.success("Saved", "Invoice recorded.");
  *   toast.error("Upload failed", err.message);
  */
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, useMemo } from "react";
 
 export type ToastKind = "success" | "warn" | "error" | "info";
 
@@ -44,13 +44,16 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     }
   }, [dismiss]);
 
-  const api: ToastApi = {
+  // Stable identity: consumers put `toast` in effect deps (config load,
+  // Dashboard fetch). A new object per render made every toast re-run those
+  // effects — and a failing load would toast → re-render → reload forever.
+  const api = useMemo<ToastApi>(() => ({
     push,
     success: (t, b) => push("success", t, b),
     warn: (t, b) => push("warn", t, b, 6500),
     error: (t, b) => push("error", t, b, 0),   // errors stick until dismissed
     info: (t, b) => push("info", t, b),
-  };
+  }), [push]);
 
   return (
     <Ctx.Provider value={api}>
@@ -80,7 +83,12 @@ export function useToast(): ToastApi {
 export function useErrorToast() {
   const toast = useToast();
   return useCallback((e: unknown, title = "Error") => {
-    const msg = e instanceof Error ? e.message : String(e);
+    // Supabase / PostgREST errors are plain objects with message + details.
+    const o = e as { message?: unknown; details?: unknown; hint?: unknown };
+    const msg = e instanceof Error ? e.message
+      : o && typeof o === "object" && typeof o.message === "string"
+        ? [o.message, o.details, o.hint].filter((x) => typeof x === "string" && x).join(" — ")
+        : String(e);
     toast.error(title, msg);
   }, [toast]);
 }

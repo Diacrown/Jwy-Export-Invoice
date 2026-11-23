@@ -195,3 +195,35 @@ td input:focus { outline: 1px solid var(--accent); background: var(--bg); }
   .toasts { bottom: 48px; left: 8px; right: 8px; max-width: none; }
   .toast { min-width: 0; max-width: none; }
 }
+
+/* ─────────────────── Settings tab ─────────────────── */
+.grid label.settings-wide { grid-column: 1 / -1; }
+.grid textarea { margin-top: 3px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); font: inherit; color: var(--fg); min-height: var(--tap); resize: vertical; }
+.grid textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.grid textarea.invalid { border-color: var(--error); background: var(--error-tint); }
+.grid input:disabled, .grid textarea:disabled { background: var(--panel); color: var(--fg-mute); cursor: not-allowed; }
+.settings-inline { display: flex; align-items: center; gap: 6px; }
+.settings-inline input { flex: 1; min-width: 0; }
+.settings-inline .muted { min-width: 44px; font-size: 11px; white-space: nowrap; }
+.settings .err { color: var(--error); font-size: 11px; margin-top: 2px; white-space: normal; }
+.settings td input.invalid { border-color: var(--error); background: var(--error-tint); }
+.settings td input:disabled { color: var(--fg); cursor: default; }
+.settings-narrow { max-width: 560px; }
+@media (min-width: 640px) { .settings td input.settings-desc { min-width: 300px; } }
+
+/* ─────────────────── Pieces cards ─────────────────── */
+.piece-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin: 10px 0; background: var(--bg); }
+.piece-card.off { opacity: 0.55; }
+.piece-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 13px; }
+.piece-include { display: flex; align-items: center; gap: 8px; min-height: var(--tap); cursor: pointer; }
+.piece-include input { width: 20px; height: 20px; }
+.piece-card .table-wrap { margin-top: 8px; }
+.piece-card td input { width: 100%; min-width: 64px; }
+.piece-card td .btn.small { margin-right: 4px; }
+.piece-card .err { color: var(--error); font-size: 12px; margin-top: 6px; }
+.grid.piece-tuning { margin-top: 8px; }
+details > summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
+
+/* checkbox inside the form grid */
+.grid label.checkbox-row span { display: flex; align-items: center; gap: 8px; min-height: var(--tap); font-weight: 500; }
+.grid label.checkbox-row input[type=checkbox] { width: 20px; height: 20px; margin: 0; }

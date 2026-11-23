@@ -14,9 +14,13 @@ export type JewelleryType =
 
 export type InvoiceStatus = "draft" | "generated" | "shipped" | "void";
 
-export type DiamondOrigin = "MINED" | "LGD001-CVD" | "LGD002-HPHT";
+/** Free text in the manual workbook's "DIA DETAILS" column (CUSTOMS PL!Y).
+ *  Seen values: MINED, LGD001-CVD, LGD002-HPHT, SEMI-PRECIOUS STONE. */
+export type DiamondOrigin = string;
 
-/** One diamond stud on one piece. A piece can carry many. */
+/** One studding row on one piece (one shape). A piece can carry many.
+ *  Coloured / semi-precious stones are also carried here — the manual
+ *  workbook puts them in the same diamond columns (EXP570 lot 3). */
 export interface DiamondDetail {
   shape: string;
   pcs: number;
@@ -27,6 +31,8 @@ export interface DiamondDetail {
   rate_usd_per_ct?: Decimal | null;
 }
 
+/** Legacy stone columns (CUSTOMS PL!AE:AJ). Unused by the samples but kept
+ *  so the formula chain stays identical to the manual workbook. */
 export interface StoneDetail {
   stone_type: string;
   shape?: string | null;
@@ -35,7 +41,7 @@ export interface StoneDetail {
   rate_usd_per_ct?: Decimal | null;
 }
 
-/** Row from SJ-50 → one piece on the invoice. */
+/** Row from SJ-50 (or a vendor packing list) → one piece on the invoice. */
 export interface Piece {
   stock_no: string;
   cust_po?: string | null;
@@ -51,19 +57,65 @@ export interface Piece {
   diamond_quality_code?: string | null;
   remarks?: string | null;
   item_category_raw: string;
+  /** File + sheet the piece came from, for the Pieces grid. */
+  source?: string | null;
+  /** Packing-list "Region" / "Loc" (M / B / S). Display only: EXP615 (B-JEW)
+   *  carries M, B and S pieces on one invoice. */
+  region?: string | null;
+  /** The packing list's second "Category" column — "Lab Studded", "Lab Semi",
+   *  "Mount", "Mined Studded", "Semi-Mined", "Gemstone Semi"… When present it
+   *  decides jewellery type and semi-mount (EXP615: remark "MINED SEMI" under
+   *  category "Mined Studded" was NOT treated as semi-mount). */
+  product_category?: string | null;
+  /** Packing-list "Labour" column ("2000/gm") in ₹/g. Beats the Settings rate. */
+  labour_rate_inr_per_gm?: Decimal | null;
+  /** true when the file had no Stock No. column and one was made up. */
+  synthetic_stock?: boolean;
 
   // Normalized
   item: string;
   kt: string;              // '9' | '14' | '18' | '18-PD'
   color: string;
   jewellery_type: JewelleryType;
+  /** "SEMI" in remarks → printed as "… SEMI-MOUNTING JEWELLERY …", own lot. */
+  semi_mount: boolean;
 
   diamonds: DiamondDetail[];
   stones: StoneDetail[];
+  /** Studding totals as read from the packing list. The clerk may split a
+   *  row by sieve size (EXP546), but the totals must still match (V4). */
+  studding_raw_pcs?: number;
+  studding_raw_cts?: Decimal;
 
-  // Per-piece tuning (gap §3.E)
+  // Per-piece tuning (gap §3.E). null/undefined = derive.
   base_gold_lock_usd?: Decimal | null;
   fixed_addon_usd?: Decimal | null;
+}
+
+/** Every intermediate the manual CUSTOMS PL row shows, column letters noted. */
+export interface PieceCalc {
+  net_wt: Decimal;            // K
+  wastage_pct: Decimal;       // L
+  wastage_wt: Decimal;        // M
+  net_plus_wastage: Decimal;  // N
+  gold_rate_per_gm: Decimal;  // O
+  gold_value: Decimal;        // P
+  diamond_value: Decimal;     // Σ AD
+  stone_value: Decimal;       // Σ AJ
+  base_lock: Decimal;         // AR
+  base_lock_auto: boolean;    // true = derived from net × touch × rate
+  base_lock_rounded: boolean; // derived value rounded to 2 dp (EXP570/615) vs full precision (EXP535)
+  base_lock_net_wt: Decimal;  // round(SJ-50 net, 2) used in the derivation
+  base_lock_touch: Decimal;
+  residual: Decimal;          // AS = P − AR
+  labour_rate_inr: Decimal;   // AT
+  labour_fx: Decimal;         // AU
+  labour_usd_per_gm: Decimal; // AV
+  labour_cost: Decimal;       // AW
+  addon: Decimal;             // AZ
+  mfg_unrounded: Decimal;     // BA
+  mfg: Decimal;               // AK = ROUND(BA, 2)
+  total: Decimal;             // AL
 }
 
 export interface LotTotals {
@@ -80,14 +132,18 @@ export interface LotTotals {
 
 export interface Lot {
   lot_no: number;
+  /** KT number only ('9' | '14' | '18') — 18K and 18K-PD share a lot. */
   kt: string;
   color: string;
   jewellery_type: JewelleryType;
+  semi_mount: boolean;
   hsn_code: string;
   description: string;
   pieces: Piece[];
   wastage_pct: Decimal;
   totals?: LotTotals;
+  /** Aligned with `pieces`. Filled by computeLotTotals. */
+  piece_calcs?: PieceCalc[];
 }
 
 /** Everything the clerk fills on the per-invoice form. */
@@ -102,6 +158,13 @@ export interface PerInvoiceInputs {
   terms_id?: string;
   preferential_agreement_id?: string;
 
+  // Resolved display text for the lookups above (what prints on the invoice)
+  pre_carriage_text?: string;
+  flight_mode_text?: string;
+  port_of_loading_text?: string;
+  terms_text?: string;
+  preferential_agreement_text?: string;
+
   // overrides (free-text that beats the lookup choice)
   terms_override?: string;
   preferential_agreement_override?: string;
@@ -113,7 +176,16 @@ export interface PerInvoiceInputs {
   gold_purchase_party: string;
   gold_purchase_invoice_no: string;
   gold_purchase_date: string;
+  gold_opening_stock_gm?: Decimal | null;
   inr_usd_rate: Decimal;
+  /** CUSTOMS PL!AU — the FX used to convert labour INR → USD. The manual
+   *  workbooks often carry a different value from the invoice FX. */
+  labour_inr_usd_rate: Decimal;
+  /** Round the derived AR to 2 dp. EXP570/573/602/615 typed AR at 2 dp;
+   *  EXP535/546/553 kept full precision. Changes MFG by at most a cent. */
+  round_base_lock_2dp?: boolean;
+  /** USD per gram of pure gold used for the AR base-gold lock. */
+  base_gold_rate_usd_per_gm: Decimal;
 
   // packaging
   package_gross_wt_kg: Decimal;
@@ -166,6 +238,7 @@ export interface Bank {
   account_no: string;
   swift: string;
   ifsc: string;
+  address?: string | null;
 }
 
 export interface HsnEntry {
@@ -197,6 +270,18 @@ export interface AppSettings {
   handcrafted_text: string;
   mfg_fixed_addon_usd: number;
   default_wastage_pct: number;
+  /** AR base-gold lock rate (USD/g pure) = invoice gold rate (USD/oz) × this
+   *  ratio, rounded to 3 dp. 0.0321199 reproduces EXP535 (139.395) and EXP615 (135.176). */
+  base_gold_lock_ratio: number;
+  /** AR base-gold lock: purity factor per KT number (manual: 9→.385, 14→.595, 18→.76). */
+  kt_touch: Record<string, number>;
   payment_instructions: string[];
   declarations: string[];
+}
+
+/** One prior use of a gold purchase, for the PURCHASE DETAILS block. */
+export interface GoldDrawdown {
+  exp_number: string;
+  exp_date: string;
+  quantity_gm: number;
 }
