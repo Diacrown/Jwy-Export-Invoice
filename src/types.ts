@@ -90,6 +90,62 @@ export interface Piece {
   // Per-piece tuning (gap §3.E). null/undefined = derive.
   base_gold_lock_usd?: Decimal | null;
   fixed_addon_usd?: Decimal | null;
+
+  /** What the Main File's "Main WS" row says about this piece. undefined = no
+   *  main file loaded; `found: false` = loaded but no row for this piece. */
+  main_ws?: MainWsMatch;
+}
+
+/** One row of the Main File's "Main WS" production tracker (only the columns
+ *  the invoice can use). Hand-typed, so every field is raw text. */
+export interface MainWsRow {
+  /** 1-based row number in the sheet, for "see row 812". */
+  row: number;
+  customer: string;
+  loc: string;
+  ship_to: string;
+  job_no: string;
+  item_no: string;
+  style_code: string;
+  status: string;
+  vendor: string;
+  ship_date: string;
+  /** "Center Diam Details" / "Side Diam Details": "1/2.50", "16/0.22". */
+  centre: string;
+  side: string;
+  /** "LGD", "Mined", "Color+Mined", "LGD Semi", "Mount"… */
+  mined_or_lab: string;
+  /** "Shape Col/Clarity": "Oval D/VS1", "Long Radiant D/VS1", "D VS1". */
+  shape_grade: string;
+  /** Every "Cert No." cell, then every "Remarks" cell (certificates turn up in both). */
+  cert_cells: string[];
+  remark_cells: string[];
+}
+
+export interface MainWsMatch {
+  found: boolean;
+  /** How the row was found: the packing list's Cust PO = JobNo, or the style no. */
+  by?: "job" | "style";
+  row?: number;
+  customer?: string;
+  ship_to?: string;
+  job_no?: string;
+  item_no?: string;
+  status?: string;
+  mined_or_lab?: string;
+  centre?: string;
+  side?: string;
+  shape?: string | null;
+  /** Normalised to the manual workbook's "D-VS1". */
+  grade?: string | null;
+  /** Normalised to the manual workbook's "IGI-LG830606356". */
+  certificates?: string[];
+  /** Index of the studding row the centre stone was matched to. */
+  centre_row?: number | null;
+  filled_certificate?: boolean;
+  filled_grade?: boolean;
+  /** Plain-language reason something was not filled, or a disagreement worth a look. */
+  notes?: string[];
 }
 
 /** Every intermediate the manual CUSTOMS PL row shows, column letters noted. */

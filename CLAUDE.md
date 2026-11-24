@@ -18,9 +18,15 @@ stones ("Col Stn"), **Labour ₹/g**, **Region** (M/B/S, display only) and a
 product **Category** ("Lab Studded", "Semi-Mined", "Mount", "Gemstone Semi"…).
 Older `SJ-50 DCJ … pcs.xls` files still parse (with or without Stock No.).
 
-Typed by the clerk in the app: certificate / grade / USD-per-ct per studding
-row (stones register autofills repeats), buyer, bank, gold rate + purity +
-Diamond India invoice no., invoice and labour FX, package weight.
+**Optional second input: the Main File's "Main WS" tab** (the production
+tracker in Google Sheets; the clerk downloads the tab as .csv). It fills certificate
+numbers and centre-stone colour/clarity and shows each piece's ship-to
+account. It has no USD/ct rates, no CVD/HPHT and no invoice-level figures.
+
+Typed by the clerk in the app: USD-per-ct per studding row, any certificate /
+grade the Main File lacks (stones register autofills repeats), buyer, bank,
+gold rate + purity + Diamond India invoice no., invoice and labour FX, package
+weight.
 
 The generated workbook has two sheets — `INVOICE` (ships with the
 parcel) and `CUSTOMS PL` (packing list + value-addition worksheet).
@@ -51,9 +57,11 @@ src/
     calculations.ts          all §5 formulas, numbered to match docs/01-*.md
     grouping.ts              pieces → lots by (KT, Color, JewelleryType)
     validators.ts            V1–V16 as pure functions
+    mainws.ts                Main WS lookup: match by job, normalise certs/grades, split centre stone, buyer hint
   parsers/
     sj50.ts                  SheetJS SJ-50 reader with shape auto-detection
     sdjjb.ts                 SDJ-JB vendor-invoice reader (labour rate)
+    mainws.ts                Main WS .csv / Main File .xlsx reader (columns found by heading)
   generators/
     xlsx.ts                  ExcelJS workbook writer — biggest known gap lives here
   storage/
@@ -92,7 +100,7 @@ SQL editor (the app keeps working without it, but Settings saves, the new
 invoice columns and bank addresses need it).
 
 Verified:
-- `npm test` — 17 tests. Reconciled to the cent against three manual
+- `npm test` — 32 tests (15 are the Main WS lookup, on made-up rows). Reconciled to the cent against three manual
   invoices: **EXP535** (C&F 9296.84), **EXP546**, and **EXP615** — the
   newest (29.10.2026), with AR derived from the gold rate and labour from the
   sheet, no hand values replayed. SDJ-JB-058's Packing List parses to 12
@@ -125,6 +133,10 @@ Verified:
 | Clerk may split one SJ-50 shape row by sieve size with different rates | EXP546 Round 54 pcs → 24/13/17 |
 | Colour stones sit in the diamond columns with DIA DETAILS "SEMI-PRECIOUS STONE" | EXP570 lot 3 |
 | One SJ-50 can feed two buyers' invoices; vendor packing lists add pieces | 05.10 → EXP546 + EXP553; B00718 from SDJ-JB-045 |
+| Main WS row = packing-list **Cust PO = JobNo** ("6930-PD" → job 6930). Style no. is not a key: it repeats across jobs and is typed differently (R0221-**O**0200 vs R0221-**0**200) | SDJ-JB-058, SJ-50 29.10 vs Main WS |
+| Certificate prints as **IGI-LG830606356**; Main WS has "IGI 830606356" in Remarks or "LG…" in Cert No.; grade prints **D-VS1** (Main WS "Oval D/VS1") | EXP615 lot 1 = Main WS, all 5 |
+| A fancy centre stone shares Swan's row with its same-shape side stones; the manual splits it (MARQUISE 5/5.03 → 1/4.56 certified + 4/0.47) | EXP615 B00797, B00803 |
+| Main WS ShipTo follows the piece's region, **not** the invoice buyer — mixed shipments went to Brisbane | EXP615, EXP616 |
 
 Manual-file inconsistencies the app deliberately does NOT copy: EXP535
 rounded gross weights to 2 dp ($0.96 total effect — the SJ-50's own net-wt
@@ -165,6 +177,7 @@ labels swapped; C&F adds discount/commission instead of subtracting.
 | Validators | ✅ V1–V16 incl. V4 split totals, per-lot V5, V8 FX drift, V10, V12 gold balance, V16 config |
 | UI | ✅ Finance-console design (navy sidebar, gold accent, Inter): 5-step wizard with stepper + sticky action bar showing running stats; drag-and-drop upload; Pieces with search, "Needs input" filter, progress, collapsible cards, stones-register autofill, split rows, AR/AZ tuning tucked away; Details in cards with live errors and an Advanced section; Review with status banner, KPIs, lot totals, readable checks; Generate with re-download; Invoices list with KPIs and void dialog; Settings in cards |
 | Persistence | ✅ re-generate replaces the earlier save; gold purchase + drawdown ledger; stones register with times_seen; base lock used per piece |
+| Main File | ✅ optional Main WS upload fills empty certificate / centre-grade cells (shaded blue), splits a shared centre-stone row, notes two-cert or carat mismatches, picks the buyer only when every piece has one ship-to; reproduces EXP615's certs and splits |
 | Tests | ✅ `npm test` (node:test via tsx) |
 
 ## What to do next (priority order)

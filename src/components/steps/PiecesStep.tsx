@@ -2,9 +2,10 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import Decimal from "decimal.js";
-import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Package, Search, SlidersHorizontal, Split, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Package, Search, Sheet, SlidersHorizontal, Split, X } from "lucide-react";
 
-import type { AppSettings, Piece } from "../../types";
+import type { AppSettings, MainWsMatch, Piece } from "../../types";
+import type { MainWsSummary } from "../../lib/mainws";
 import { baseGoldLockUsd, netWtGm, touchFor } from "../../lib/calculations";
 import { Badge, Callout, Field, Progress, fmtNum, fmtUsd, plural } from "../ui";
 import { Empty } from "../Skeleton";
@@ -22,6 +23,7 @@ interface Props {
   laborRates: Record<string, number>;
   /** Bumped when state changes under the uncontrolled inputs (stones-register autofill). */
   version: number;
+  mainSummary: MainWsSummary | null;
   toggleInclude: (stock: string, on: boolean) => void;
   setAllIncluded: (on: boolean, filter?: (p: Piece) => boolean) => void;
   updateDiamond: (stock: string, idx: number, patch: DiamondPatch) => void;
@@ -69,7 +71,8 @@ export function PiecesStep(props: Props) {
     if (filter === "ready" && !s.ready) return false;
     if (filter === "off" && !s.off) return false;
     if (!q) return true;
-    return [p.cust_style_no, p.stock_no, p.cust_po, p.item, p.product_category].some((v) => v && v.toLowerCase().includes(q));
+    return [p.cust_style_no, p.stock_no, p.cust_po, p.item, p.product_category, p.main_ws?.customer, p.main_ws?.ship_to]
+      .some((v) => v && v.toLowerCase().includes(q));
   });
   const sources = [...new Set(pieces.map((p) => p.source ?? ""))].filter(Boolean);
   const allCollapsed = visible.every((p) => collapsed.has(p.stock_no) || excluded.has(p.stock_no));
@@ -113,6 +116,17 @@ export function PiecesStep(props: Props) {
         <Progress value={counts.ready} max={included} />
         <span><strong className="num" style={{ color: "var(--ink)" }}>{counts.ready}</strong> of {plural(included, "piece")} ready</span>
       </div>
+
+      {props.mainSummary && (
+        <div style={{ marginBottom: 16 }}>
+          <Callout tone={props.mainSummary.unmatched.length ? "warn" : "ok"}
+                   title={`Main File: ${props.mainSummary.matched} of ${plural(props.mainSummary.matched + props.mainSummary.unmatched.length, "piece")} found`}>
+            Filled {plural(props.mainSummary.certificates, "certificate")} and {plural(props.mainSummary.grades, "centre-stone grade")} (shaded blue below) — check them against the certificate.
+            {props.mainSummary.unmatched.length > 0 && <> Not in Main WS: {props.mainSummary.unmatched.join(", ")}.</>}
+            {props.mainSummary.toCheck > 0 && <> {plural(props.mainSummary.toCheck, "piece")} {props.mainSummary.toCheck === 1 ? "has" : "have"} a note to read.</>}
+          </Callout>
+        </div>
+      )}
 
       {visible.length === 0 && (
         <Empty icon={Package} title="No pieces match" body="Clear the search or pick another filter."
@@ -170,6 +184,8 @@ function PieceCard(props: Props & {
           <Badge tone="navy" title={p.product_category ? `Category on the sheet: ${p.product_category.trim()}` : undefined}>{typeLabel(p.jewellery_type)}</Badge>
           {p.semi_mount && <Badge tone="gold">Semi-mount</Badge>}
           {p.region && <Badge tone="plain" title="Region on the packing list (display only)">Region {p.region}</Badge>}
+          {p.main_ws && !p.main_ws.found && <Badge tone="plain" title={p.main_ws.notes?.join(" ")}>Not in Main WS</Badge>}
+          {p.main_ws?.found && (p.main_ws.notes?.length ?? 0) > 0 && <Badge tone="warn" title={p.main_ws.notes!.join(" ")}>Main WS note</Badge>}
           {!on ? <Badge>Not on invoice</Badge>
             : st.mismatch ? <Badge tone="bad" dot>Totals differ</Badge>
             : st.missing ? <Badge tone="warn" dot>{plural(st.missing, "rate")} missing</Badge>
@@ -180,6 +196,7 @@ function PieceCard(props: Props & {
 
       {open && (
         <div className="piece-body">
+          {p.main_ws && <MainWsStrip m={p.main_ws} />}
           {p.diamonds.length > 0 ? (
             <div className="table-wrap cards stones">
               <table>
@@ -196,10 +213,14 @@ function PieceCard(props: Props & {
                       <td data-label="Carats" className="num"><input inputMode="decimal" defaultValue={d.cts.toString()} aria-label="Carats" style={{ width: 72, minWidth: 64, textAlign: "right" }}
                                                     onBlur={(e) => props.updateDiamond(p.stock_no, i, { cts: e.target.value })} /></td>
                       <td data-label="Certificate"><input placeholder="IGI-LG…" defaultValue={d.certificate_no ?? ""} aria-label="Certificate" style={{ minWidth: 124 }}
+                                                    className={clsx({ "from-main": fromMain(p.main_ws, i, "cert", d.certificate_no) })}
+                                                    title={fromMain(p.main_ws, i, "cert", d.certificate_no) ? `From Main WS row ${p.main_ws!.row}` : undefined}
                                                     onBlur={(e) => props.onCertBlur(p.stock_no, i, e.target.value)} /></td>
                       <td data-label="Dia details"><input placeholder="LGD001-CVD" list="origin-options" defaultValue={d.origin ?? ""} aria-label="Dia details" style={{ minWidth: 104 }}
                                                     onBlur={(e) => props.updateDiamond(p.stock_no, i, { origin: e.target.value })} /></td>
                       <td data-label="Colour & clarity"><input placeholder="D-VS1" defaultValue={d.color_clarity ?? ""} aria-label="Colour and clarity" style={{ minWidth: 76 }}
+                                                    className={clsx({ "from-main": fromMain(p.main_ws, i, "grade", d.color_clarity) })}
+                                                    title={fromMain(p.main_ws, i, "grade", d.color_clarity) ? `From Main WS row ${p.main_ws!.row}` : undefined}
                                                     onBlur={(e) => props.updateDiamond(p.stock_no, i, { color_clarity: e.target.value })} /></td>
                       <td data-label="USD / ct" className="num"><input placeholder="0.00" inputMode="decimal" aria-label="USD per carat" style={{ width: 84, minWidth: 72, textAlign: "right" }}
                                                     className={clsx({ need: d.pcs > 0 && !d.rate_usd_per_ct })} defaultValue={d.rate_usd_per_ct?.toString() ?? ""}
@@ -262,5 +283,45 @@ function PieceCard(props: Props & {
         </div>
       )}
     </section>
+  );
+}
+
+/** A cell shows the value Main WS put there (and the clerk hasn't changed it). */
+function fromMain(m: MainWsMatch | undefined, row: number, what: "cert" | "grade", value: string | null | undefined): boolean {
+  if (!m?.found || m.centre_row !== row || !value) return false;
+  return what === "cert" ? !!m.filled_certificate && value === m.certificates?.[0] : !!m.filled_grade && value === m.grade;
+}
+
+/** One line of what Main WS says about the piece, plus any notes. */
+function MainWsStrip({ m }: { m: MainWsMatch }) {
+  if (!m.found) {
+    return (
+      <div className="mainws miss">
+        <span className="src"><Sheet size={14} /> Not in Main WS</span>
+        <span>{m.notes?.[0]}</span>
+      </div>
+    );
+  }
+  const shapeGrade = [m.shape, m.grade].filter(Boolean).join(" ");
+  return (
+    <>
+      <div className="mainws">
+        <span className="src" title={m.by === "job" ? "Matched on the packing list's Cust PO = Main WS JobNo" : "Matched on the style no."}>
+          <Sheet size={14} /> Main WS row {m.row}
+        </span>
+        <span>{m.by === "job" ? `job ${m.job_no}` : `style ${m.item_no}`}</span>
+        {m.customer && <span>{m.customer}</span>}
+        {m.ship_to && <span>ships to {m.ship_to}</span>}
+        {m.mined_or_lab && <span>{m.mined_or_lab}</span>}
+        {m.centre && <span className="num">centre {m.centre}</span>}
+        {shapeGrade && <span>{shapeGrade}</span>}
+        {(m.certificates?.length ?? 0) > 0 && <span>{m.certificates!.join(", ")}</span>}
+      </div>
+      {(m.notes?.length ?? 0) > 0 && (
+        <Callout tone="warn">
+          {m.notes!.length === 1 ? m.notes![0] : <ul className="notes">{m.notes!.map((n) => <li key={n}>{n}</li>)}</ul>}
+        </Callout>
+      )}
+    </>
   );
 }

@@ -366,6 +366,23 @@ td .row-actions { display: flex; gap: 4px; justify-content: flex-end; }
 
 .split-2 > .card + .card { margin-top: 0; }
 .brand-text { min-width: 0; }
+.dropzone.compact { flex-direction: row; justify-content: flex-start; gap: 14px; padding: 16px 18px; text-align: left; }
+.dropzone.compact .dropzone-icon { width: 40px; height: 40px; border-radius: 11px; flex-shrink: 0; }
+.dropzone.compact .dropzone-title { font-size: 14px; }
+.howto { margin: 12px 0 0; padding-left: 20px; font-size: 12.5px; line-height: 1.55; color: var(--ink-3); }
+.howto strong { color: var(--ink-2); font-weight: 600; }
+.card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.link-btn { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--navy-700); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.link-btn:hover { color: var(--navy-900, var(--ink)); }
+
+/* Main WS strip on a piece */
+.mainws { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--navy-50); font-size: 12.5px; color: var(--ink-2); }
+.mainws > span + span::before { content: "·"; margin: 0 7px; color: var(--ink-4); }
+.mainws .src { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--navy-700); }
+.mainws.miss { background: var(--surface-2); color: var(--ink-3); }
+.mainws + .callout { margin-bottom: 12px; }
+.callout ul.notes { margin: 4px 0 0; padding-left: 18px; }
+td input.from-main { background: var(--navy-50); }
 
 /* ───────────── pieces ───────────── */
 .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }

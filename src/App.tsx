@@ -4,10 +4,12 @@ import Decimal from "decimal.js";
 import { ArrowLeft, ArrowRight, Calculator, Database, FileSearch, FileSpreadsheet, History, RotateCcw, ShieldCheck } from "lucide-react";
 
 import { supabase } from "./supabase";
-import type { AppSettings, DiamondDetail, GoldDrawdown, HsnEntry, JewelleryType, Lot, PerInvoiceInputs, Piece, ValidationReport } from "./types";
+import type { AppSettings, Buyer, DiamondDetail, GoldDrawdown, HsnEntry, JewelleryType, Lot, MainWsRow, PerInvoiceInputs, Piece, ValidationReport } from "./types";
 import { loadAppSettings, loadHsnTable, loadLaborRates } from "./storage/settings";
 import { fetchAllBanks, fetchAllBuyers, fetchBank, fetchBuyer, lookupStone } from "./storage/lookups";
 import { parsePackingLists } from "./parsers/sj50";
+import { parseMainWs } from "./parsers/mainws";
+import { applyMainWs, suggestBuyer, type MainWsSummary } from "./lib/mainws";
 import { groupPiecesIntoLots } from "./lib/grouping";
 import { computeLotTotals, defaultBaseGoldRate, grandTotalCf, grandTotalInr, pureGoldUsedGm, withGrossRounded, DEFAULT_BASE_GOLD_LOCK_RATIO } from "./lib/calculations";
 import { isBlocked, runAll } from "./lib/validators";
@@ -18,7 +20,7 @@ import { Settings } from "./components/Settings";
 import { Sidebar, Stepper, type StepView, type View } from "./components/Shell";
 import { ToastProvider, useErrorToast, useToast } from "./components/Toast";
 import { ActionBar, BrandMark, Card, ConfirmDialog, Field, Kbd, Spinner, Stat, fmtUsd, plural } from "./components/ui";
-import { UploadStep, MAX_FILE_BYTES } from "./components/steps/UploadStep";
+import { UploadStep, MAX_FILE_BYTES, MAX_MAIN_BYTES } from "./components/steps/UploadStep";
 import { PiecesStep, type DiamondPatch } from "./components/steps/PiecesStep";
 import { DetailsStep } from "./components/steps/DetailsStep";
 import { ReviewStep, type Ledger } from "./components/steps/ReviewStep";
@@ -116,8 +118,15 @@ function AppInner() {
   const [result, setResult] = useState<GenerateResult | null>(null);
   const [pieceVersion, setPieceVersion] = useState(0);   // bump to re-seed uncontrolled inputs
   const [confirmReset, setConfirmReset] = useState(false);
+  // Main File "Main WS" tab (optional): certificates, centre-stone grades, ship-to.
+  const [mainFile, setMainFileState] = useState<File | null>(null);
+  const [mainRows, setMainRows] = useState<{ file: File; rows: MainWsRow[] } | null>(null);
+  const [mainSummary, setMainSummary] = useState<MainWsSummary | null>(null);
+  const [mainBusy, setMainBusy] = useState(false);
+  const [buyers, setBuyers] = useState<Buyer[]>([]);
 
   const included = useMemo(() => pieces.filter((p) => !excluded.has(p.stock_no)), [pieces, excluded]);
+  const buyerHint = useMemo(() => (buyers.length ? suggestBuyer(included, buyers) : null), [included, buyers]);
   const ratesMissing = useMemo(() => included.reduce((a, p) => a + missingRates(p), 0), [included]);
   // Base-lock rate: typed value, else gold rate × ratio (EXP535 139.395, EXP615 135.176).
   const lockRatio = settings?.base_gold_lock_ratio ?? DEFAULT_BASE_GOLD_LOCK_RATIO;
@@ -132,14 +141,50 @@ function AppInner() {
   // Any edit after a preview invalidates it
   const invalidate = useCallback(() => { setReport(null); setLots([]); setTotals(null); setResult(null); }, []);
 
+  function setMainFile(f: File | null) {
+    setMainFileState(f);
+    setMainSummary(null);
+  }
+
+  /** Main WS rows for the chosen file (parsed once per file). */
+  async function loadMainRows(file: File): Promise<MainWsRow[]> {
+    if (mainRows?.file === file) return mainRows.rows;
+    if (file.size > MAX_MAIN_BYTES) throw new Error(`${file.name} is over 60 MB. Download just the Main WS tab as .csv instead.`);
+    const rows = await parseMainWs(file, file.name);
+    setMainRows({ file, rows });
+    return rows;
+  }
+
+  /** Fill empty certificate / grade cells from Main WS; pick the buyer when every piece ships to one account. */
+  async function fillFromMain(ps: Piece[], file: File): Promise<Piece[]> {
+    const rows = await loadMainRows(file);
+    const { pieces: filled, summary } = applyMainWs(ps, rows);
+    setMainSummary(summary);
+    const bs = buyers.length ? buyers : await fetchAllBuyers().catch(() => [] as Buyer[]);
+    if (!buyers.length) setBuyers(bs);
+    const hint = suggestBuyer(filled, bs);
+    if (hint?.unanimous && hint.buyer) {
+      const id = hint.buyer.id;
+      setForm((f) => (f.buyer_id ? f : { ...f, buyer_id: id }));
+    }
+    toast.success("Main File matched",
+      `${summary.matched} of ${plural(ps.length, "piece")} found · ${plural(summary.certificates, "certificate")} and ${plural(summary.grades, "grade")} filled.`);
+    return filled;
+  }
+
   async function onParse() {
     if (!packFiles.length || tooBig) return;
     setParseBusy(true);
     try {
-      const { pieces: ps, duplicates } = await parsePackingLists(packFiles.map((f) => ({ file: f, name: f.name })));
-      setPieces(ps); setExcluded(new Set()); invalidate();
-      toast.success("Packing list read", `${plural(ps.length, "piece")} from ${plural(packFiles.length, "file")}.`);
+      const { pieces: parsed, duplicates } = await parsePackingLists(packFiles.map((f) => ({ file: f, name: f.name })));
+      toast.success("Packing list read", `${plural(parsed.length, "piece")} from ${plural(packFiles.length, "file")}.`);
       if (duplicates.length) toast.info("Duplicates skipped", `${plural(duplicates.length, "stock no.", "stock nos.")} appeared twice: ${duplicates.slice(0, 5).join(", ")}${duplicates.length > 5 ? "…" : ""}`);
+      let ps = parsed;
+      if (mainFile) {
+        try { ps = await fillFromMain(parsed, mainFile); }
+        catch (e) { setMainSummary(null); errToast(e, "Couldn't read the Main File — carrying on without it"); }
+      }
+      setPieces(ps); setExcluded(new Set()); invalidate(); setPieceVersion((v) => v + 1);
       const noLabour = ps.filter((p) => !p.labour_rate_inr_per_gm).length;
       if (noLabour) toast.info("Labour from Settings", `${plural(noLabour, "piece")} had no Labour value on the sheet — the Settings rate for its KT is used.`);
       go("pieces");
@@ -147,6 +192,21 @@ function AppInner() {
       errToast(e, "Couldn't read the file");
     } finally {
       setParseBusy(false);
+    }
+  }
+
+  /** Main File added after the packing list was read: fill without re-reading (keeps typed rates). */
+  async function onApplyMain() {
+    if (!mainFile || !pieces.length) return;
+    setMainBusy(true);
+    try {
+      const filled = await fillFromMain(pieces, mainFile);
+      setPieces(filled); invalidate(); setPieceVersion((v) => v + 1);
+      go("pieces");
+    } catch (e) {
+      errToast(e, "Couldn't read the Main File");
+    } finally {
+      setMainBusy(false);
     }
   }
 
@@ -375,6 +435,7 @@ function AppInner() {
 
   function startNew() {
     setPieces([]); setExcluded(new Set()); setPackFiles([]);
+    setMainSummary(null);   // the Main File stays picked — it serves the next shipment too
     setForm(initialForm());
     setShowErrors(false); setLedger(null);
     setLots([]); setTotals(null); setReport(null); setResult(null);
@@ -564,10 +625,14 @@ function AppInner() {
               </div>
               <Stepper steps={stepViews} current={step} onPick={go} />
 
-              {step === "upload" && <UploadStep files={packFiles} setFiles={setPackFiles} parsedCount={pieces.length} />}
+              {step === "upload" && (
+                <UploadStep files={packFiles} setFiles={setPackFiles} parsedCount={pieces.length}
+                            mainFile={mainFile} setMainFile={setMainFile} mainSummary={mainSummary}
+                            mainBusy={mainBusy} onApplyMain={onApplyMain} />
+              )}
               {step === "pieces" && (
                 <PiecesStep
-                  pieces={pieces} excluded={excluded} version={pieceVersion}
+                  pieces={pieces} excluded={excluded} version={pieceVersion} mainSummary={mainSummary}
                   settings={settings} baseRate={baseRate} laborRates={laborRates} roundAr={form.round_base_lock_2dp}
                   toggleInclude={toggleInclude} setAllIncluded={setAllIncluded}
                   updateDiamond={updateDiamond} splitDiamond={splitDiamond} removeDiamond={removeDiamond}
@@ -576,7 +641,7 @@ function AppInner() {
               )}
               {step === "details" && (
                 <DetailsStep form={form} setForm={(f) => { setForm(f); invalidate(); }} errors={showErrors ? liveFormErrors : NO_ERRORS}
-                             settings={settings} autoBaseRate={autoBaseRate} lockRatio={lockRatio} />
+                             settings={settings} autoBaseRate={autoBaseRate} lockRatio={lockRatio} buyerHint={buyerHint} />
               )}
               {step === "review" && <ReviewStep lots={lots} totals={totals} report={report} ledger={ledger} inrRate={form.inr_usd_rate} />}
               {step === "generate" && (

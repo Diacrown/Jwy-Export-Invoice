@@ -5,6 +5,7 @@ import { ChevronRight, Coins, FileText, Package, Plane, Repeat, SlidersHorizonta
 
 import type { AppSettings } from "../../types";
 import type { LookupOption } from "../../storage/lookups";
+import type { BuyerSuggestion } from "../../lib/mainws";
 import { Dropdown } from "../Dropdown";
 import { Callout, Card, Field } from "../ui";
 import { ADVANCED_FIELDS, type FormErrors, type FormState } from "./form";
@@ -17,11 +18,31 @@ const LABELS: Partial<Record<keyof FormState, string>> = {
   freight_usd: "Freight", insurance_usd: "Insurance", discount_usd: "Discount", commission_usd: "Commission",
 };
 
+/** Under the Buyer field: where Main WS says the included pieces ship to. */
+function BuyerHint({ hint, buyerId, onUse }: { hint: BuyerSuggestion; buyerId: string | null; onUse: (id: string) => void }) {
+  const total = hint.counts.reduce((a, [, n]) => a + n, 0);
+  const picked = hint.buyer && buyerId === hint.buyer.id;
+  return (
+    <span>
+      {hint.unanimous
+        ? <>Main File: all {total} pieces ship to <strong>{hint.code}</strong>{picked ? " — buyer picked from that." : "."}</>
+        : <>Main File ship-to: {hint.counts.map(([c, n]) => `${n} × ${c}`).join(" · ")}. Mixed, so pick the buyer yourself (EXP615 went to Brisbane).</>}
+      {hint.unanimous && hint.buyer && !picked && (
+        <> <button type="button" className="link-btn" onClick={() => onUse(hint.buyer!.id)}>
+          Use {hint.buyer.name} ({hint.buyer.city.toLowerCase()})
+        </button></>
+      )}
+      {hint.unanimous && !hint.buyer && <> No buyer is set up for {hint.code} yet.</>}
+    </span>
+  );
+}
+
 export function DetailsStep(props: {
   form: FormState; setForm: (f: FormState) => void; errors: FormErrors;
   settings: AppSettings | null; autoBaseRate: Decimal | null; lockRatio: number;
+  buyerHint: BuyerSuggestion | null;
 }) {
-  const { form, setForm, errors, autoBaseRate, lockRatio } = props;
+  const { form, setForm, errors, autoBaseRate, lockRatio, buyerHint } = props;
   function u<K extends keyof FormState>(k: K, v: FormState[K]) { setForm({ ...form, [k]: v }); }
   function pick(idKey: keyof FormState, textKey?: keyof FormState) {
     return (o: LookupOption | null) => setForm({ ...form, [idKey]: o?.id ?? null, ...(textKey ? { [textKey]: o?.label ?? "" } : {}) });
@@ -61,7 +82,8 @@ export function DetailsStep(props: {
             {input("invoice_number", { placeholder: "EXP616/2026-27" })}
           </Field>
           <Field label="Invoice date" required error={errors.invoice_date}>{input("invoice_date", { type: "date" })}</Field>
-          <Field label="Buyer" required error={errors.buyer_id} asDiv>
+          <Field label="Buyer" required error={errors.buyer_id} asDiv
+                 hint={buyerHint && <BuyerHint hint={buyerHint} buyerId={form.buyer_id} onUse={(id) => u("buyer_id", id)} />}>
             <Dropdown lookupKey="buyers" value={form.buyer_id} onChange={pick("buyer_id")} invalid={!!errors.buyer_id} allowAdd={false} placeholder="Select buyer" />
           </Field>
           <Field label="Bank" required error={errors.bank_id} asDiv>
