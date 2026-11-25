@@ -3,6 +3,9 @@
 -- Run this top-to-bottom in the Supabase SQL editor (or via `supabase db reset`
 -- in a local project). Idempotent where it can be.
 --
+-- THEN run every file in supabase/migrations/ in date order. Existing
+-- projects only need the migrations they have not run yet.
+--
 -- Storage buckets to create manually in the Supabase dashboard (private):
 --   raw-sj50          — uploaded Jewellery-dept packing lists (.xls/.xlsx)
 --   vendor-sdjjb      — uploaded Swan Diamond vendor invoices

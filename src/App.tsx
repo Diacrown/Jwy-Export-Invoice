@@ -1,81 +1,44 @@
-/** Top-level app shell: auth gate + tabbed workflow + toasts + dashboard. */
-import { useEffect, useState } from "react";
-import clsx from "clsx";
+/** Top-level app: auth gate, sidebar shell, the five-step invoice wizard, invoices list and settings. */
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Decimal from "decimal.js";
+import { ArrowLeft, ArrowRight, Calculator, Database, FileSearch, FileSpreadsheet, History, RotateCcw, ShieldCheck } from "lucide-react";
 
 import { supabase } from "./supabase";
-import type { AppSettings, HsnEntry, JewelleryType, Lot, Piece, ValidationReport } from "./types";
+import type { AppSettings, Buyer, DiamondDetail, GoldDrawdown, HsnEntry, JewelleryType, Lot, MainWsRow, PerInvoiceInputs, Piece, ValidationReport } from "./types";
 import { loadAppSettings, loadHsnTable, loadLaborRates } from "./storage/settings";
-import { fetchBank, fetchBuyer } from "./storage/lookups";
-import { parseSj50 } from "./parsers/sj50";
-import { parseSdjjb, type SdjjbData } from "./parsers/sdjjb";
+import { fetchAllBanks, fetchAllBuyers, fetchBank, fetchBuyer, lookupStone } from "./storage/lookups";
+import { parsePackingLists } from "./parsers/sj50";
+import { parseMainWs } from "./parsers/mainws";
+import { applyMainWs, suggestBuyer, type MainWsSummary } from "./lib/mainws";
 import { groupPiecesIntoLots } from "./lib/grouping";
-import { computeLotTotals, grandTotalCf, grandTotalInr } from "./lib/calculations";
+import { computeLotTotals, defaultBaseGoldRate, grandTotalCf, grandTotalInr, pureGoldUsedGm, withGrossRounded, DEFAULT_BASE_GOLD_LOCK_RATIO } from "./lib/calculations";
 import { isBlocked, runAll } from "./lib/validators";
 import { generateXlsx } from "./generators/xlsx";
-import { saveInvoice } from "./storage/invoices";
-import { Dropdown } from "./components/Dropdown";
+import { loadGoldLedger, saveInvoice } from "./storage/invoices";
 import { Dashboard } from "./components/Dashboard";
-import { Empty, SkelRows, Skel } from "./components/Skeleton";
+import { Settings } from "./components/Settings";
+import { Sidebar, Stepper, type StepView, type View } from "./components/Shell";
 import { ToastProvider, useErrorToast, useToast } from "./components/Toast";
-import type { LookupOption } from "./storage/lookups";
+import { ActionBar, BrandMark, Card, ConfirmDialog, Field, Kbd, Spinner, Stat, fmtUsd, plural } from "./components/ui";
+import { UploadStep, MAX_FILE_BYTES, MAX_MAIN_BYTES } from "./components/steps/UploadStep";
+import { PiecesStep, type DiamondPatch } from "./components/steps/PiecesStep";
+import { DetailsStep } from "./components/steps/DetailsStep";
+import { ReviewStep, type Ledger } from "./components/steps/ReviewStep";
+import { GenerateStep, type GenerateResult } from "./components/steps/GenerateStep";
+import {
+  STEPS, dec, initialForm, isNum, marketSuffix, missingRates, validateForm,
+  type FormErrors, type FormState, type Step,
+} from "./components/steps/form";
 
-type Tab = "dashboard" | "upload" | "pieces" | "form" | "review" | "generate";
+const NO_ERRORS: FormErrors = {};
 
-interface FormState {
-  invoice_number: string;
-  invoice_date: string;
-  buyer_id: string | null;
-  bank_id: string | null;
-  terms_id: string | null;
-  pre_carriage_id: string | null;
-  flight_mode_id: string | null;
-  port_of_loading_id: string | null;
-  preferential_agreement_id: string | null;
-  gold_rate_usd_per_troy_oz: string;
-  gold_purity: string;
-  gold_purchase_party: string;
-  gold_purchase_invoice_no: string;
-  gold_purchase_date: string;
-  inr_usd_rate: string;
-  package_gross_wt_kg: string;
-  container_number: string;
-  wastage_pct_override: string;
-  discount_usd: string;
-  freight_usd: string;
-  insurance_usd: string;
-}
-
-const INITIAL_FORM: FormState = {
-  invoice_number: "", invoice_date: new Date().toISOString().slice(0, 10),
-  buyer_id: null, bank_id: null, terms_id: null, pre_carriage_id: null,
-  flight_mode_id: null, port_of_loading_id: null, preferential_agreement_id: null,
-  gold_rate_usd_per_troy_oz: "", gold_purity: "0.999",
-  gold_purchase_party: "DIAMOND INDIA LIMITED", gold_purchase_invoice_no: "",
-  gold_purchase_date: new Date().toISOString().slice(0, 10),
-  inr_usd_rate: "", package_gross_wt_kg: "", container_number: "1",
-  wastage_pct_override: "", discount_usd: "0", freight_usd: "0", insurance_usd: "0",
+const STEP_SUB: Record<Step, string> = {
+  upload: "Start with the packing list from Swan.",
+  pieces: "Choose the pieces for this invoice and price each stone row. Fields save when you leave them.",
+  details: "Everything the packing list doesn't carry. Fields marked * are required.",
+  review: "Check the totals and the validation before generating.",
+  generate: "Create the workbook and save the invoice.",
 };
-
-type FormErrors = Partial<Record<keyof FormState, string>>;
-
-function validateForm(f: FormState): FormErrors {
-  const e: FormErrors = {};
-  if (!f.invoice_number.trim()) e.invoice_number = "Required";
-  else if (!/^EXP\d+\/\d{4}-\d{2}$/i.test(f.invoice_number)) e.invoice_number = "Format: EXP570/2026-27";
-  if (!f.invoice_date) e.invoice_date = "Required";
-  if (!f.buyer_id) e.buyer_id = "Pick a buyer";
-  if (!f.bank_id) e.bank_id = "Pick a bank";
-  if (!f.gold_rate_usd_per_troy_oz) e.gold_rate_usd_per_troy_oz = "Required";
-  else if (Number(f.gold_rate_usd_per_troy_oz) <= 0) e.gold_rate_usd_per_troy_oz = "Must be positive";
-  if (!f.inr_usd_rate) e.inr_usd_rate = "Required";
-  else if (Number(f.inr_usd_rate) <= 0) e.inr_usd_rate = "Must be positive";
-  if (!f.gold_purchase_invoice_no.trim()) e.gold_purchase_invoice_no = "Required";
-  if (!f.package_gross_wt_kg) e.package_gross_wt_kg = "Required";
-  const purity = Number(f.gold_purity);
-  if (!purity || purity <= 0 || purity > 1) e.gold_purity = "0 < purity ≤ 1";
-  return e;
-}
 
 export function App() {
   return (
@@ -85,24 +48,28 @@ export function App() {
   );
 }
 
+interface SessionUser { email?: string; app_metadata?: { role?: string } }
+
 function AppInner() {
   const toast = useToast();
   const errToast = useErrorToast();
 
-  // Auth
-  const [user, setUser] = useState<{ email?: string } | null>(null);
+  // ── auth ──
+  const [user, setUser] = useState<SessionUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [signInBusy, setSignInBusy] = useState(false);
+  const envMissing = !import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY
+    || /your-project|your-anon/i.test(`${import.meta.env.VITE_SUPABASE_URL}${import.meta.env.VITE_SUPABASE_ANON_KEY}`);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ?? null);
+      setUser((data.session?.user as SessionUser | undefined) ?? null);
       setAuthLoading(false);
-    });
+    }).catch(() => setAuthLoading(false));
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      setUser(session?.user ?? null);
+      setUser((session?.user as SessionUser | undefined) ?? null);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -114,153 +81,314 @@ function AppInner() {
     setSignInBusy(false);
     if (error) toast.error("Sign-in failed", error.message);
   }
+  const role = user?.app_metadata?.role ?? "viewer";
+  const canEdit = role === "accounts" || role === "admin";
 
-  // Config
+  // ── config ──
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [hsnTable, setHsnTable] = useState<Record<JewelleryType, HsnEntry> | null>(null);
   const [laborRates, setLaborRates] = useState<Record<string, number>>({});
   const [configLoading, setConfigLoading] = useState(false);
+  const [configVersion, setConfigVersion] = useState(0);
 
   useEffect(() => {
     if (!user) return;
     setConfigLoading(true);
     Promise.all([loadAppSettings(), loadHsnTable(), loadLaborRates()])
       .then(([s, h, l]) => { setSettings(s); setHsnTable(h); setLaborRates(l); })
-      .catch((e) => errToast(e, "Config load failed"))
+      .catch((e) => errToast(e, "Settings failed to load"))
       .finally(() => setConfigLoading(false));
-  }, [user, errToast]);
+  }, [user, errToast, configVersion]);
 
-  // Flow state
-  const [tab, setTab] = useState<Tab>("dashboard");
-  const [sj50File, setSj50File] = useState<File | null>(null);
-  const [sdjFile, setSdjFile] = useState<File | null>(null);
+  // ── navigation + flow state ──
+  const [view, setView] = useState<View>("invoices");
+  const [step, setStep] = useState<Step>("upload");
+  const [packFiles, setPackFiles] = useState<File[]>([]);
   const [pieces, setPieces] = useState<Piece[]>([]);
-  const [, setSdjData] = useState<SdjjbData | null>(null);
-  const [form, setForm] = useState<FormState>(INITIAL_FORM);
-  const [formErrors, setFormErrors] = useState<FormErrors>({});
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [form, setForm] = useState<FormState>(initialForm);
+  const [showErrors, setShowErrors] = useState(false);   // after a failed preview, errors update live
   const [lots, setLots] = useState<Lot[]>([]);
   const [totals, setTotals] = useState<{ usd: Decimal; inr: Decimal } | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
+  const [ledger, setLedger] = useState<Ledger | null>(null);
   const [parseBusy, setParseBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [generateBusy, setGenerateBusy] = useState(false);
-  const [result, setResult] = useState<{ invoice_id: string } | null>(null);
+  const [result, setResult] = useState<GenerateResult | null>(null);
+  const [pieceVersion, setPieceVersion] = useState(0);   // bump to re-seed uncontrolled inputs
+  const [confirmReset, setConfirmReset] = useState(false);
+  // Main File "Main WS" tab (optional): certificates, centre-stone grades, ship-to.
+  const [mainFile, setMainFileState] = useState<File | null>(null);
+  const [mainRows, setMainRows] = useState<{ file: File; rows: MainWsRow[] } | null>(null);
+  const [mainSummary, setMainSummary] = useState<MainWsSummary | null>(null);
+  const [mainBusy, setMainBusy] = useState(false);
+  const [buyers, setBuyers] = useState<Buyer[]>([]);
 
-  // Keyboard shortcuts (Ctrl+Enter advances)
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-        if (tab === "upload" && sj50File && !parseBusy) { e.preventDefault(); onParse(); }
-        else if (tab === "pieces") { e.preventDefault(); setTab("form"); }
-        else if (tab === "form" && !previewBusy) { e.preventDefault(); doPreview(); }
-        else if (tab === "review" && report && !isBlocked(report)) { e.preventDefault(); setTab("generate"); }
-        else if (tab === "generate" && !generateBusy && !result) { e.preventDefault(); doGenerate(); }
-      }
+  const included = useMemo(() => pieces.filter((p) => !excluded.has(p.stock_no)), [pieces, excluded]);
+  const buyerHint = useMemo(() => (buyers.length ? suggestBuyer(included, buyers) : null), [included, buyers]);
+  const ratesMissing = useMemo(() => included.reduce((a, p) => a + missingRates(p), 0), [included]);
+  // Base-lock rate: typed value, else gold rate × ratio (EXP535 139.395, EXP615 135.176).
+  const lockRatio = settings?.base_gold_lock_ratio ?? DEFAULT_BASE_GOLD_LOCK_RATIO;
+  const autoBaseRate = isNum(form.gold_rate_usd_per_troy_oz) ? defaultBaseGoldRate(new Decimal(form.gold_rate_usd_per_troy_oz), lockRatio) : null;
+  const baseRate: Decimal | null = isNum(form.base_gold_rate_usd_per_gm) ? new Decimal(form.base_gold_rate_usd_per_gm) : autoBaseRate;
+  const liveFormErrors = useMemo(() => validateForm(form), [form]);
+  const tooBig = packFiles.some((f) => f.size > MAX_FILE_BYTES);
+
+  const go = useCallback((s: Step) => { setView("wizard"); setStep(s); }, []);
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [view, step]);
+
+  // Any edit after a preview invalidates it
+  const invalidate = useCallback(() => { setReport(null); setLots([]); setTotals(null); setResult(null); }, []);
+
+  function setMainFile(f: File | null) {
+    setMainFileState(f);
+    setMainSummary(null);
+  }
+
+  /** Main WS rows for the chosen file (parsed once per file). */
+  async function loadMainRows(file: File): Promise<MainWsRow[]> {
+    if (mainRows?.file === file) return mainRows.rows;
+    if (file.size > MAX_MAIN_BYTES) throw new Error(`${file.name} is over 60 MB. Download just the Main WS tab as .csv instead.`);
+    const rows = await parseMainWs(file, file.name);
+    setMainRows({ file, rows });
+    return rows;
+  }
+
+  /** Fill empty certificate / grade cells from Main WS; pick the buyer when every piece ships to one account. */
+  async function fillFromMain(ps: Piece[], file: File): Promise<Piece[]> {
+    const rows = await loadMainRows(file);
+    const { pieces: filled, summary } = applyMainWs(ps, rows);
+    setMainSummary(summary);
+    const bs = buyers.length ? buyers : await fetchAllBuyers().catch(() => [] as Buyer[]);
+    if (!buyers.length) setBuyers(bs);
+    const hint = suggestBuyer(filled, bs);
+    if (hint?.unanimous && hint.buyer) {
+      const id = hint.buyer.id;
+      setForm((f) => (f.buyer_id ? f : { ...f, buyer_id: id }));
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, sj50File, parseBusy, previewBusy, generateBusy, report, result]);
+    toast.success("Main File matched",
+      `${summary.matched} of ${plural(ps.length, "piece")} found · ${plural(summary.certificates, "certificate")} and ${plural(summary.grades, "grade")} filled.`);
+    return filled;
+  }
 
   async function onParse() {
-    if (!sj50File) return;
+    if (!packFiles.length || tooBig) return;
     setParseBusy(true);
     try {
-      const ps = await parseSj50(sj50File);
-      setPieces(ps);
-      toast.success("SJ-50 parsed", `${ps.length} pieces loaded.`);
-      if (sdjFile) {
-        try {
-          const sd = await parseSdjjb(sdjFile);
-          setSdjData(sd);
-          const rates = Object.entries(sd.labor_rate_by_kt).map(([k, v]) => `${k}K: ₹${v}`).join(", ");
-          toast.info("Vendor file read", rates || sd.vendor_invoice_no || "no labor rates detected");
-        } catch (e) {
-          toast.warn("Vendor file skipped", (e as Error).message);
-        }
+      const { pieces: parsed, duplicates } = await parsePackingLists(packFiles.map((f) => ({ file: f, name: f.name })));
+      toast.success("Packing list read", `${plural(parsed.length, "piece")} from ${plural(packFiles.length, "file")}.`);
+      if (duplicates.length) toast.info("Duplicates skipped", `${plural(duplicates.length, "stock no.", "stock nos.")} appeared twice: ${duplicates.slice(0, 5).join(", ")}${duplicates.length > 5 ? "…" : ""}`);
+      let ps = parsed;
+      if (mainFile) {
+        try { ps = await fillFromMain(parsed, mainFile); }
+        catch (e) { setMainSummary(null); errToast(e, "Couldn't read the Main File — carrying on without it"); }
       }
-      setTab("pieces");
+      setPieces(ps); setExcluded(new Set()); invalidate(); setPieceVersion((v) => v + 1);
+      const noLabour = ps.filter((p) => !p.labour_rate_inr_per_gm).length;
+      if (noLabour) toast.info("Labour from Settings", `${plural(noLabour, "piece")} had no Labour value on the sheet — the Settings rate for its KT is used.`);
+      go("pieces");
     } catch (e) {
-      errToast(e, "Parse failed");
+      errToast(e, "Couldn't read the file");
     } finally {
       setParseBusy(false);
     }
   }
 
-  function updatePieceDiamond(stock: string, patch: { certificate_no?: string; color_clarity?: string; rate_usd_per_ct?: string }) {
-    setPieces((prev) => prev.map((p) => {
-      if (p.stock_no !== stock) return p;
-      const d0 = p.diamonds[0] ?? { shape: "ROUND", pcs: 0, cts: new Decimal(0) };
-      const next = {
-        ...d0,
-        certificate_no: patch.certificate_no ?? d0.certificate_no,
-        color_clarity: patch.color_clarity ?? d0.color_clarity,
-        rate_usd_per_ct: patch.rate_usd_per_ct !== undefined ? (patch.rate_usd_per_ct ? new Decimal(patch.rate_usd_per_ct) : null) : d0.rate_usd_per_ct,
-      };
-      return { ...p, diamonds: [next, ...p.diamonds.slice(1)] };
-    }));
+  /** Main File added after the packing list was read: fill without re-reading (keeps typed rates). */
+  async function onApplyMain() {
+    if (!mainFile || !pieces.length) return;
+    setMainBusy(true);
+    try {
+      const filled = await fillFromMain(pieces, mainFile);
+      setPieces(filled); invalidate(); setPieceVersion((v) => v + 1);
+      go("pieces");
+    } catch (e) {
+      errToast(e, "Couldn't read the Main File");
+    } finally {
+      setMainBusy(false);
+    }
   }
 
-  /** Per-piece tuning (gap §3.E): AR base-gold-lock and AZ fixed add-on. */
+  // ── piece edits ──
+  function patchPiece(stock: string, f: (p: Piece) => Piece) {
+    setPieces((prev) => prev.map((p) => (p.stock_no === stock ? f(p) : p)));
+    invalidate();
+  }
+  function updateDiamond(stock: string, idx: number, patch: DiamondPatch) {
+    patchPiece(stock, (p) => {
+      const ds = p.diamonds.map((d, i) => {
+        if (i !== idx) return d;
+        const n: DiamondDetail = { ...d };
+        if (patch.shape !== undefined) n.shape = patch.shape.trim().toUpperCase() || d.shape;
+        if (patch.pcs !== undefined) n.pcs = Math.max(0, Math.trunc(Number(patch.pcs) || 0));
+        if (patch.cts !== undefined) n.cts = isNum(patch.cts) ? new Decimal(patch.cts) : new Decimal(0);
+        if (patch.certificate_no !== undefined) n.certificate_no = patch.certificate_no.trim() || null;
+        if (patch.origin !== undefined) n.origin = patch.origin.trim() || null;
+        if (patch.color_clarity !== undefined) n.color_clarity = patch.color_clarity.trim() || null;
+        if (patch.rate_usd_per_ct !== undefined) n.rate_usd_per_ct = isNum(patch.rate_usd_per_ct) ? new Decimal(patch.rate_usd_per_ct) : null;
+        return n;
+      });
+      return { ...p, diamonds: ds };
+    });
+  }
+  function splitDiamond(stock: string, idx: number) {
+    patchPiece(stock, (p) => {
+      const d = p.diamonds[idx];
+      const copy: DiamondDetail = { shape: d.shape, pcs: 0, cts: new Decimal(0), origin: d.origin, color_clarity: d.color_clarity, rate_usd_per_ct: null, certificate_no: null };
+      return { ...p, diamonds: [...p.diamonds.slice(0, idx + 1), copy, ...p.diamonds.slice(idx + 1)] };
+    });
+  }
+  function removeDiamond(stock: string, idx: number) {
+    patchPiece(stock, (p) => ({ ...p, diamonds: p.diamonds.filter((_, i) => i !== idx) }));
+  }
+  async function onCertBlur(stock: string, idx: number, cert: string) {
+    updateDiamond(stock, idx, { certificate_no: cert });
+    if (!cert.trim()) return;
+    try {
+      const hit = await lookupStone(cert);
+      if (!hit) return;
+      patchPiece(stock, (p) => ({
+        ...p,
+        diamonds: p.diamonds.map((d, i) => i !== idx ? d : {
+          ...d,
+          origin: d.origin || hit.lab_origin,
+          color_clarity: d.color_clarity || hit.color_clarity,
+          rate_usd_per_ct: d.rate_usd_per_ct ?? hit.last_rate_usd_per_ct,
+        }),
+      }));
+      setPieceVersion((v) => v + 1);
+      toast.info("Filled from the stones register", `${hit.certificate_no}: ${[hit.lab_origin, hit.color_clarity, hit.last_rate_usd_per_ct ? `$${hit.last_rate_usd_per_ct}/ct` : null].filter(Boolean).join(" · ")}`);
+    } catch (e) {
+      console.warn("stones_register lookup failed", e);
+    }
+  }
   function updatePieceTuning(stock: string, patch: { base_gold_lock_usd?: string; fixed_addon_usd?: string }) {
-    setPieces((prev) => prev.map((p) => {
-      if (p.stock_no !== stock) return p;
-      const dec = (v?: string) => (v !== undefined ? (v ? new Decimal(v) : null) : undefined);
-      const base = dec(patch.base_gold_lock_usd);
-      const addon = dec(patch.fixed_addon_usd);
+    patchPiece(stock, (p) => {
+      const d = (v?: string) => (v === undefined ? undefined : isNum(v) ? new Decimal(v) : null);
+      const base = d(patch.base_gold_lock_usd);
+      const addon = d(patch.fixed_addon_usd);
       return {
         ...p,
         base_gold_lock_usd: base === undefined ? p.base_gold_lock_usd : base,
         fixed_addon_usd: addon === undefined ? p.fixed_addon_usd : addon,
       };
-    }));
+    });
+  }
+  function toggleInclude(stock: string, on: boolean) {
+    setExcluded((prev) => { const n = new Set(prev); if (on) n.delete(stock); else n.add(stock); return n; });
+    invalidate();
+  }
+  function setAllIncluded(on: boolean, filter?: (p: Piece) => boolean) {
+    setExcluded((prev) => {
+      const n = new Set(prev);
+      for (const p of pieces) if (!filter || filter(p)) { if (on) n.delete(p.stock_no); else n.add(p.stock_no); }
+      return n;
+    });
+    invalidate();
+  }
+
+  function inputsFromForm(f: FormState): PerInvoiceInputs {
+    const fx = dec(f.inr_usd_rate);
+    return {
+      invoice_number: f.invoice_number.trim().toUpperCase(),
+      invoice_date: f.invoice_date,
+      buyer_id: f.buyer_id!, bank_id: f.bank_id!,
+      pre_carriage_id: f.pre_carriage_id ?? undefined,
+      flight_mode_id: f.flight_mode_id ?? undefined,
+      port_of_loading_id: f.port_of_loading_id ?? undefined,
+      terms_id: f.terms_id ?? undefined,
+      preferential_agreement_id: f.preferential_agreement_id ?? undefined,
+      pre_carriage_text: f.pre_carriage_text || undefined,
+      flight_mode_text: f.flight_mode_text || undefined,
+      port_of_loading_text: f.port_of_loading_text || undefined,
+      terms_text: f.terms_text || undefined,
+      preferential_agreement_text: f.preferential_agreement_text || undefined,
+      buyer_order_no: f.buyer_order_no.trim() || null,
+      buyer_order_date: f.buyer_order_date || null,
+      gold_rate_usd_per_troy_oz: dec(f.gold_rate_usd_per_troy_oz),
+      gold_purity: dec(f.gold_purity, 0.999),
+      gold_purchase_party: f.gold_purchase_party.trim(),
+      gold_purchase_invoice_no: f.gold_purchase_invoice_no.trim(),
+      gold_purchase_date: f.gold_purchase_date,
+      gold_opening_stock_gm: isNum(f.gold_opening_stock_gm) ? new Decimal(f.gold_opening_stock_gm) : null,
+      inr_usd_rate: fx,
+      labour_inr_usd_rate: isNum(f.labour_inr_usd_rate) ? new Decimal(f.labour_inr_usd_rate) : fx,
+      round_base_lock_2dp: f.round_base_lock_2dp,
+      base_gold_rate_usd_per_gm: baseRate ?? new Decimal(0),
+      package_gross_wt_kg: dec(f.package_gross_wt_kg),
+      container_number: parseInt(f.container_number, 10) || 1,
+      wastage_pct_override: isNum(f.wastage_pct_override) ? new Decimal(f.wastage_pct_override) : null,
+      discount_usd: dec(f.discount_usd),
+      freight_usd: dec(f.freight_usd),
+      insurance_usd: dec(f.insurance_usd),
+      commission_usd: dec(f.commission_usd),
+    };
   }
 
   async function doPreview() {
-    if (!settings || !hsnTable) { toast.warn("Config not loaded yet", "Try again in a moment."); return; }
+    if (!settings || !hsnTable) { toast.warn("Settings are still loading", "Try again in a moment."); return; }
+    if (!included.length) { toast.warn("No pieces selected", "Include at least one piece on the Pieces step."); return; }
     const errs = validateForm(form);
-    setFormErrors(errs);
-    if (Object.keys(errs).length) { toast.warn("Fix form errors", `${Object.keys(errs).length} field(s) need attention.`); return; }
+    setShowErrors(Object.keys(errs).length > 0);
+    if (Object.keys(errs).length) {
+      toast.warn("Some details are missing", `${plural(Object.keys(errs).length, "field")} need attention.`);
+      go("details"); window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
     setPreviewBusy(true);
+    setResult(null);   // a fresh preview re-arms Generate (re-generating replaces the earlier save)
     try {
-      const wastage = new Decimal(form.wastage_pct_override || settings.default_wastage_pct);
-      const groupedLots = groupPiecesIntoLots(pieces, hsnTable, wastage);
-      for (const lot of groupedLots) {
-        const labor = laborRates[lot.kt] ?? 1275;
+      const inputs = inputsFromForm(form);
+      // Unselected terms / agreement print the buyer's defaults — validate what will print.
+      const buyer = await fetchBuyer(inputs.buyer_id).catch(() => null);
+      if (buyer && !inputs.preferential_agreement_text && buyer.default_preferential_agreement) {
+        inputs.preferential_agreement_text = buyer.default_preferential_agreement;
+      }
+      const prepared = withGrossRounded(included, form.round_gross_2dp);
+      const grouped = groupPiecesIntoLots(prepared, hsnTable, new Decimal(settings.default_wastage_pct), inputs.wastage_pct_override);
+      for (const lot of grouped) {
         computeLotTotals({
-          lot, hsn: hsnTable[lot.jewellery_type],
-          gold_rate_usd_per_troy_oz: new Decimal(form.gold_rate_usd_per_troy_oz),
-          gold_purity_imported: new Decimal(form.gold_purity),
-          inr_usd_rate: new Decimal(form.inr_usd_rate),
-          wastage_pct: wastage,
-          labor_rate_inr_per_gm: new Decimal(labor),
+          lot,
+          gold_rate_usd_per_troy_oz: inputs.gold_rate_usd_per_troy_oz,
+          gold_purity: inputs.gold_purity,
+          labour_inr_usd_rate: inputs.labour_inr_usd_rate,
+          base_gold_rate_usd_per_gm: inputs.base_gold_rate_usd_per_gm,
+          kt_touch: settings.kt_touch,
+          labor_rates: laborRates,
           fixed_addon_usd: new Decimal(settings.mfg_fixed_addon_usd),
+          round_base_lock_2dp: form.round_base_lock_2dp,
         });
       }
       const usd = grandTotalCf({
-        lots: groupedLots,
-        discount: new Decimal(form.discount_usd || 0),
-        freight: new Decimal(form.freight_usd || 0),
-        insurance: new Decimal(form.insurance_usd || 0),
+        lots: grouped, discount: inputs.discount_usd, freight: inputs.freight_usd,
+        insurance: inputs.insurance_usd, commission: inputs.commission_usd,
       });
-      const inr = grandTotalInr(usd, new Decimal(form.inr_usd_rate));
-      setLots(groupedLots);
-      setTotals({ usd, inr });
+      const inr = grandTotalInr(usd, inputs.inr_usd_rate);
+      const used = grouped.reduce((a, l) => a.add(pureGoldUsedGm(l, inputs.gold_purity)), new Decimal(0));
 
+      let led: { opening_gm: number | null; drawdowns: GoldDrawdown[]; registered: boolean } | null = null;
+      try { led = await loadGoldLedger(inputs); } catch (e) { console.warn("gold ledger load failed", e); }
+      setLedger(led ? { ...led, used } : null);
+      const before = led?.opening_gm != null
+        ? new Decimal(led.opening_gm).sub(led.drawdowns.reduce((a, d) => a + d.quantity_gm, 0)) : null;
+
+      setLots(grouped);
+      setTotals({ usd, inr });
       const rep = runAll({
-        pieces, lots: groupedLots,
-        inputs: inputsFromForm(form),
-        hsnTable, defaultWastagePct: new Decimal(settings.default_wastage_pct),
+        pieces: prepared, lots: grouped, inputs, hsnTable,
+        defaultWastagePct: new Decimal(settings.default_wastage_pct), settings,
+        goldBalanceBeforeGm: before, goldUsedGm: used,
       });
       setReport(rep);
       if (isBlocked(rep)) {
-        toast.error("Validation blocks generation", `${rep.findings.filter(f => f.severity === "hard" && !f.passed).length} hard failure(s).`);
+        toast.error("Generation is blocked", `${plural(rep.findings.filter((f) => f.severity === "hard" && !f.passed).length, "check")} failed — see Review.`);
       } else {
-        toast.success("Preview ready", `Total USD $${usd.toFixed(2)} · INR ₹${inr.toFixed(2)}`);
+        toast.success("Totals ready", `C&F ${fmtUsd(usd)}`);
       }
-      setTab("review");
+      go("review");
     } catch (e) {
-      errToast(e, "Preview failed");
+      errToast(e, "Couldn't calculate the totals");
     } finally {
       setPreviewBusy(false);
     }
@@ -270,30 +398,34 @@ function AppInner() {
     if (!settings || !hsnTable || !lots.length || !totals || !form.buyer_id || !form.bank_id) return;
     setGenerateBusy(true);
     try {
-      const buyer = await fetchBuyer(form.buyer_id);
-      const bank = await fetchBank(form.bank_id);
+      const inputs = inputsFromForm(form);
+      const [buyer, bank, buyers, banks] = await Promise.all([
+        fetchBuyer(form.buyer_id), fetchBank(form.bank_id),
+        fetchAllBuyers().catch(() => []), fetchAllBanks().catch(() => []),
+      ]);
+      if (ledger?.opening_gm != null && !inputs.gold_opening_stock_gm) inputs.gold_opening_stock_gm = new Decimal(ledger.opening_gm);
       const blob = await generateXlsx({
-        settings, buyer, bank,
-        inputs: inputsFromForm(form),
+        settings, buyer, bank, buyers, banks, inputs,
         lots, totals_usd: totals.usd, totals_inr: totals.inr,
+        drawdowns: ledger?.drawdowns ?? [],
       });
-      const safeInv = form.invoice_number.replace(/[^A-Za-z0-9]/g, "-");
-      const genName = `${safeInv}-MASTER-DETAILS.xlsx`;
+      const safeInv = inputs.invoice_number.replace(/[^A-Za-z0-9]+/g, "-");
+      const market = marketSuffix(buyer.city, buyer.country);
+      const genName = `INVOICE NO. ${safeInv}${market ? ` (${market})` : ""} MASTER DETAILS.xlsx`;
 
       const saved = await saveInvoice({
-        inputs: inputsFromForm(form),
-        lots, totals_usd: totals.usd, totals_inr: totals.inr,
-        rawSj50File: sj50File, rawSj50FileName: sj50File?.name,
-        vendorFile: sdjFile, vendorFileName: sdjFile?.name,
+        inputs, lots, totals_usd: totals.usd, totals_inr: totals.inr,
+        rawFiles: packFiles.map((f) => ({ file: f, name: f.name })),
         generatedBlob: blob, generatedFileName: genName,
+        goldUsedGm: ledger?.used ?? null,
       });
-      setResult({ invoice_id: saved.invoice_id });
+      setResult({ invoice_id: saved.invoice_id, replaced: saved.replaced, fileName: genName, blob });
 
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url; a.download = genName; a.click();
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-      toast.success("Invoice generated", `Saved as ${genName}. Also persisted to Supabase.`);
+      toast.success(saved.replaced ? "Invoice re-generated" : "Invoice generated", genName);
     } catch (e) {
       errToast(e, "Generation failed");
     } finally {
@@ -302,435 +434,231 @@ function AppInner() {
   }
 
   function startNew() {
-    setPieces([]); setSj50File(null); setSdjFile(null); setSdjData(null);
-    setForm(INITIAL_FORM); setFormErrors({});
+    setPieces([]); setExcluded(new Set()); setPackFiles([]);
+    setMainSummary(null);   // the Main File stays picked — it serves the next shipment too
+    setForm(initialForm());
+    setShowErrors(false); setLedger(null);
     setLots([]); setTotals(null); setReport(null); setResult(null);
-    setTab("upload");
+    setConfirmReset(false);
+    go("upload");
   }
 
-  // ────────── Render ──────────
+  // ── step availability + labels ──
+  const blocked = report ? isBlocked(report) : true;
+  const stepViews: StepView[] = STEPS.map(({ key, label }) => {
+    switch (key) {
+      case "upload": return { key, label, done: pieces.length > 0, enabled: true,
+        meta: pieces.length ? plural(packFiles.length || 1, "file") : "Packing list" };
+      case "pieces": return { key, label, done: included.length > 0 && ratesMissing === 0, enabled: pieces.length > 0,
+        meta: pieces.length ? (ratesMissing ? `${plural(ratesMissing, "rate")} missing` : `${included.length} of ${pieces.length}`) : "Rates & certs",
+        warn: pieces.length > 0 && ratesMissing > 0 };
+      case "details": {
+        const n = Object.keys(liveFormErrors).length;
+        return { key, label, done: n === 0, enabled: pieces.length > 0, meta: n ? `${n} to fill` : "Complete" };
+      }
+      case "review": return { key, label, done: !!report && !blocked, enabled: lots.length > 0,
+        meta: totals ? fmtUsd(totals.usd) : "Totals & checks", warn: !!report && blocked };
+      case "generate": return { key, label, done: !!result, enabled: !!report && !blocked,
+        meta: result ? "Saved" : "Excel + save" };
+    }
+  });
+  const stepIdx = STEPS.findIndex((s) => s.key === step);
+  const prevStep = stepIdx > 0 ? STEPS[stepIdx - 1].key : null;
 
-  if (authLoading) return <div style={{ padding: 40 }}>Loading…</div>;
+  // ── keyboard: Ctrl/Cmd + Enter advances ──
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!((e.ctrlKey || e.metaKey) && e.key === "Enter") || view !== "wizard") return;
+      if (step === "upload" && packFiles.length && !parseBusy) { e.preventDefault(); onParse(); }
+      else if (step === "pieces" && included.length) { e.preventDefault(); (document.activeElement as HTMLElement | null)?.blur(); go("details"); }
+      else if (step === "details" && !previewBusy) { e.preventDefault(); (document.activeElement as HTMLElement | null)?.blur(); doPreview(); }
+      else if (step === "review" && report && !blocked) { e.preventDefault(); go("generate"); }
+      else if (step === "generate" && !generateBusy && !result) { e.preventDefault(); doGenerate(); }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // ────────── blocking screens ──────────
+
+  if (envMissing) {
+    return (
+      <div className="blocking">
+        <Card icon={Database} title="Supabase is not configured" desc="This build has no Supabase project URL or anon key.">
+          <div className="stack">
+            <p>For local development, open <code>.env</code>, set <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code>
+              {" "}(Supabase → Project Settings → API), then restart <code>npm run dev</code>.</p>
+            <p>On Netlify, set the same two variables under Site settings → Environment variables and redeploy.</p>
+            <p className="hint-small">Never use the <code>service_role</code> key here.</p>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+  if (authLoading) return <div className="center-load"><Spinner /></div>;
   if (!user) {
     return (
-      <div style={{ maxWidth: 380, margin: "80px auto", padding: 20 }}>
-        <h2>Sign in</h2>
-        <form onSubmit={signIn} className="grid" style={{ gridTemplateColumns: "1fr", gap: 12 }}>
-          <label>Email<input type="email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} required autoComplete="username" /></label>
-          <label>Password<input type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required autoComplete="current-password" /></label>
-          <button className="btn primary" type="submit" disabled={signInBusy}>{signInBusy ? <><span className="spinner" /> Signing in…</> : "Sign in"}</button>
-          <div className="hint-small">Create your account in Supabase → Authentication → Users, then set <code>app_metadata.role = "accounts"</code>.</div>
-        </form>
+      <div className="auth">
+        <section className="auth-brand">
+          <div className="brand">
+            <BrandMark />
+            <div><div className="brand-name">DIACROWN</div><div className="brand-sub">Export invoices</div></div>
+          </div>
+          <div>
+            <h1>Export invoices, <em>without the retyping.</em></h1>
+            <p className="lede">Turn Swan&apos;s packing list into the MASTER DETAILS workbook — invoice and customs packing list — ready for the shipping bill.</p>
+          </div>
+          <ul className="auth-points">
+            <li><FileSpreadsheet size={18} />Reads the Packing List sheet; you add the stone rates, buyer and gold.</li>
+            <li><ShieldCheck size={18} />Checks weights, wastage, value addition and HSN before anything is saved.</li>
+            <li><History size={18} />Keeps every invoice, gold drawdown and certified stone for the next shipment.</li>
+          </ul>
+          <svg className="auth-facets" viewBox="0 0 200 200" fill="none" stroke="currentColor" strokeWidth="1.2" aria-hidden>
+            <path d="M30 72 66 32h68l36 40-70 104Z" /><path d="M30 72h140" /><path d="m66 32 18 40 16-40 16 40 18-40" />
+            <path d="m84 72 16 104 16-104" />
+          </svg>
+        </section>
+        <div className="auth-side">
+          <div className="auth-card">
+            <div className="brand auth-mark"><BrandMark size={30} /><div className="brand-name">DIACROWN</div></div>
+            <h2>Sign in</h2>
+            <p className="page-sub">Use your DIACROWN accounts login.</p>
+            <form onSubmit={signIn}>
+              <Field label="Email"><input type="email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} required autoComplete="username" autoFocus /></Field>
+              <Field label="Password"><input type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required autoComplete="current-password" /></Field>
+              <button className="btn primary big" type="submit" disabled={signInBusy}>{signInBusy ? <><Spinner /> Signing in…</> : "Sign in"}</button>
+            </form>
+            <p className="hint-small" style={{ marginTop: 16 }}>No account yet? An admin adds you in Supabase with the <code>accounts</code> role.</p>
+          </div>
+        </div>
       </div>
     );
   }
 
+  // ────────── wizard action bar ──────────
+
+  const back = prevStep && (
+    <button className="btn" onClick={() => go(prevStep)}><ArrowLeft size={16} /> Back</button>
+  );
+  const piecesStat = pieces.length > 0 && <Stat label={`of ${pieces.length} pieces on invoice`} value={included.length} />;
+  const ratesStat = pieces.length > 0 && (ratesMissing
+    ? <Stat tone="warn" label={ratesMissing === 1 ? "rate missing" : "rates missing"} value={ratesMissing} />
+    : <Stat tone="ok" label="all rates in" value="✓" />);
+
+  let actionBar: React.ReactNode = null;
+  if (step === "upload") {
+    actionBar = (
+      <ActionBar stats={packFiles.length ? <Stat label={packFiles.length === 1 ? "file selected" : "files selected"} value={packFiles.length} /> : <span>Pick the SDJ-JB file to start</span>}>
+        <button className="btn primary" disabled={!packFiles.length || parseBusy || tooBig} onClick={onParse}>
+          {parseBusy ? <><Spinner /> Reading…</> : <><FileSearch size={16} /> Read packing list <Kbd /></>}
+        </button>
+      </ActionBar>
+    );
+  } else if (step === "pieces") {
+    actionBar = (
+      <ActionBar stats={<>{piecesStat}{ratesStat}</>}>
+        {back}
+        <button className="btn primary" onClick={() => go("details")} disabled={!included.length}>Continue <ArrowRight size={16} /> <Kbd /></button>
+      </ActionBar>
+    );
+  } else if (step === "details") {
+    actionBar = (
+      <ActionBar stats={<>{piecesStat}{ratesStat}</>}>
+        {back}
+        <button className="btn primary" onClick={doPreview} disabled={previewBusy}>
+          {previewBusy ? <><Spinner /> Calculating…</> : <><Calculator size={16} /> Preview totals <Kbd /></>}
+        </button>
+      </ActionBar>
+    );
+  } else if (step === "review") {
+    actionBar = (
+      <ActionBar stats={totals && <><Stat label="C&F" value={fmtUsd(totals.usd)} /><Stat label={lots.length === 1 ? "lot" : "lots"} value={lots.length} /></>}>
+        {back}
+        <button className="btn primary" onClick={() => go("generate")} disabled={blocked}>
+          {blocked ? "Fix the problems first" : <>Continue <ArrowRight size={16} /> <Kbd /></>}
+        </button>
+      </ActionBar>
+    );
+  } else if (step === "generate" && !result) {
+    actionBar = (
+      <ActionBar stats={totals && <><Stat label="C&F" value={fmtUsd(totals.usd)} /><Stat label={included.length === 1 ? "piece" : "pieces"} value={included.length} /></>}>
+        {back}
+        <button className="btn primary" onClick={doGenerate} disabled={generateBusy}>
+          {generateBusy ? <><Spinner /> Generating…</> : <><FileSpreadsheet size={16} /> Generate invoice <Kbd /></>}
+        </button>
+      </ActionBar>
+    );
+  }
+
+  const invoiceTitle = form.invoice_number.trim().toUpperCase() || (pieces.length ? "Untitled invoice" : "New invoice");
+
   return (
-    <>
-      <header className="titlebar">
-        <div className="title">
-          <span className="logo">JWY</span>
-          <span>jwy-export-invoice <span className="muted">— {user.email}</span></span>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {configLoading && <span className="pill"><span className="spinner" /> loading config</span>}
-          <button className="btn small" onClick={() => supabase.auth.signOut()}>Sign out</button>
-        </div>
-      </header>
+    <div className="app">
+      <Sidebar
+        view={view} onNavigate={setView}
+        draftMeta={pieces.length ? `${stepIdx + 1}/${STEPS.length}` : null}
+        email={user.email} canEdit={canEdit} configLoading={configLoading}
+        onSignOut={() => supabase.auth.signOut()}
+      />
+      <main className="main">
+        <div className="page">
+          {view === "invoices" && (
+            <Dashboard canEdit={canEdit} hasDraft={pieces.length > 0} onNew={() => (pieces.length ? setView("wizard") : startNew())} />
+          )}
 
-      <nav className="tabs" role="tablist">
-        {([
-          ["dashboard", "📊 Dashboard"],
-          ["upload", "1 · Upload"],
-          ["pieces", "2 · Pieces"],
-          ["form", "3 · Per-invoice"],
-          ["review", "4 · Review"],
-          ["generate", "5 · Generate"],
-        ] as [Tab, string][]).map(([t, label]) => (
-          <button
-            key={t}
-            className={clsx("tab", { active: tab === t })}
-            onClick={() => setTab(t)}
-            disabled={
-              (t === "pieces" && pieces.length === 0) ||
-              (t === "form" && pieces.length === 0) ||
-              (t === "review" && lots.length === 0) ||
-              (t === "generate" && (!report || isBlocked(report)))
-            }
-          >{label}</button>
-        ))}
-      </nav>
+          {view === "settings" && (
+            <Settings canEdit={canEdit} onSaved={() => { setConfigVersion((v) => v + 1); invalidate(); }} />
+          )}
 
-      <main className="pane">
-        {tab === "dashboard" && (
-          <>
-            <Dashboard />
-            <div style={{ marginTop: 20 }}>
-              <button className="btn primary" onClick={startNew}>+ New invoice</button>
-            </div>
-          </>
-        )}
-        {tab === "upload" && (
-          <UploadPane
-            sj50File={sj50File} setSj50File={setSj50File}
-            sdjFile={sdjFile} setSdjFile={setSdjFile}
-            onParse={onParse} busy={parseBusy}
-          />
-        )}
-        {tab === "pieces" && (
-          pieces.length === 0 ? (
-            <Empty icon="📦" title="No pieces loaded" body="Upload an SJ-50 file first." />
-          ) : (
-            <PiecesPane pieces={pieces} updatePieceDiamond={updatePieceDiamond} updatePieceTuning={updatePieceTuning} onContinue={() => setTab("form")} />
-          )
-        )}
-        {tab === "form" && (
-          <FormPane form={form} setForm={setForm} errors={formErrors} onPreview={doPreview} busy={previewBusy} />
-        )}
-        {tab === "review" && (
-          <ReviewPane lots={lots} totals={totals} report={report} onBack={() => setTab("form")} onContinue={() => setTab("generate")} />
-        )}
-        {tab === "generate" && (
-          <GeneratePane busy={generateBusy} result={result} onGenerate={doGenerate} onNewInvoice={startNew} />
-        )}
+          {view === "wizard" && (
+            <>
+              <div className="page-head">
+                <div>
+                  <h1 className="page-title">{invoiceTitle}<span className="tag">Step {stepIdx + 1} of {STEPS.length}</span></h1>
+                  <p className="page-sub">{STEP_SUB[step]}</p>
+                </div>
+                {pieces.length > 0 && (
+                  <div className="page-actions">
+                    <button className="btn ghost small" onClick={() => setConfirmReset(true)}><RotateCcw size={15} /> Start over</button>
+                  </div>
+                )}
+              </div>
+              <Stepper steps={stepViews} current={step} onPick={go} />
+
+              {step === "upload" && (
+                <UploadStep files={packFiles} setFiles={setPackFiles} parsedCount={pieces.length}
+                            mainFile={mainFile} setMainFile={setMainFile} mainSummary={mainSummary}
+                            mainBusy={mainBusy} onApplyMain={onApplyMain} />
+              )}
+              {step === "pieces" && (
+                <PiecesStep
+                  pieces={pieces} excluded={excluded} version={pieceVersion} mainSummary={mainSummary}
+                  settings={settings} baseRate={baseRate} laborRates={laborRates} roundAr={form.round_base_lock_2dp}
+                  toggleInclude={toggleInclude} setAllIncluded={setAllIncluded}
+                  updateDiamond={updateDiamond} splitDiamond={splitDiamond} removeDiamond={removeDiamond}
+                  onCertBlur={onCertBlur} updatePieceTuning={updatePieceTuning}
+                />
+              )}
+              {step === "details" && (
+                <DetailsStep form={form} setForm={(f) => { setForm(f); invalidate(); }} errors={showErrors ? liveFormErrors : NO_ERRORS}
+                             settings={settings} autoBaseRate={autoBaseRate} lockRatio={lockRatio} buyerHint={buyerHint} />
+              )}
+              {step === "review" && <ReviewStep lots={lots} totals={totals} report={report} ledger={ledger} inrRate={form.inr_usd_rate} />}
+              {step === "generate" && (
+                <GenerateStep result={result} canEdit={canEdit} invoiceNumber={form.invoice_number.trim().toUpperCase()}
+                              onNewInvoice={startNew} onViewInvoices={() => setView("invoices")} />
+              )}
+
+              <div className="page-spacer" />
+              {actionBar}
+            </>
+          )}
+        </div>
       </main>
 
-      <footer className="statusbar">
-        <span>{configLoading ? "Loading config…" : settings ? `Ready · ${settings.exporter_name}` : "Config missing"}</span>
-        <span>Ctrl + Enter to advance · Esc to cancel</span>
-      </footer>
-    </>
-  );
-}
-
-function inputsFromForm(f: FormState) {
-  return {
-    invoice_number: f.invoice_number,
-    invoice_date: f.invoice_date,
-    buyer_id: f.buyer_id!, bank_id: f.bank_id!,
-    pre_carriage_id: f.pre_carriage_id ?? undefined,
-    flight_mode_id: f.flight_mode_id ?? undefined,
-    port_of_loading_id: f.port_of_loading_id ?? undefined,
-    terms_id: f.terms_id ?? undefined,
-    preferential_agreement_id: f.preferential_agreement_id ?? undefined,
-    gold_rate_usd_per_troy_oz: new Decimal(f.gold_rate_usd_per_troy_oz),
-    gold_purity: new Decimal(f.gold_purity),
-    gold_purchase_party: f.gold_purchase_party,
-    gold_purchase_invoice_no: f.gold_purchase_invoice_no,
-    gold_purchase_date: f.gold_purchase_date,
-    inr_usd_rate: new Decimal(f.inr_usd_rate),
-    package_gross_wt_kg: new Decimal(f.package_gross_wt_kg || 0),
-    container_number: parseInt(f.container_number, 10) || 1,
-    wastage_pct_override: f.wastage_pct_override ? new Decimal(f.wastage_pct_override) : null,
-    discount_usd: new Decimal(f.discount_usd || 0),
-    freight_usd: new Decimal(f.freight_usd || 0),
-    insurance_usd: new Decimal(f.insurance_usd || 0),
-    commission_usd: new Decimal(0),
-  };
-}
-
-// ────────── Sub-panes ──────────
-
-function UploadPane(props: {
-  sj50File: File | null; setSj50File: (f: File | null) => void;
-  sdjFile: File | null; setSdjFile: (f: File | null) => void;
-  onParse: () => void; busy: boolean;
-}) {
-  const { sj50File, setSj50File, sdjFile, setSdjFile, onParse, busy } = props;
-  return (
-    <div>
-      <h2>Upload the SJ-50 raw file</h2>
-      <p className="hint">Jewellery-dept packing list — <code>.xls</code> or <code>.xlsx</code>. Max ~10 MB.</p>
-      <div className={clsx("dropzone", { "have-file": !!sj50File })}>
-        <input id="sj50" type="file" accept=".xls,.xlsx"
-               onChange={(e) => setSj50File(e.target.files?.[0] ?? null)} />
-        <label htmlFor="sj50">{sj50File ? sj50File.name : "Pick file or drop here"}</label>
-        {sj50File && <div className="hint-small">{(sj50File.size / 1024).toFixed(1)} KB · {sj50File.type || "application/vnd.ms-excel"}</div>}
-      </div>
-
-      <h3 className="section">Optional: SDJ-JB vendor invoice</h3>
-      <p className="hint">If uploaded, the module reads labor rates per KT from it instead of using the defaults.</p>
-      <div className={clsx("dropzone", { "have-file": !!sdjFile })}>
-        <input id="sdj" type="file" accept=".xls,.xlsx"
-               onChange={(e) => setSdjFile(e.target.files?.[0] ?? null)} disabled={!sj50File} />
-        <label htmlFor="sdj">{sdjFile ? sdjFile.name : "Pick vendor invoice (optional)"}</label>
-      </div>
-
-      <div className="actions">
-        <button className="btn primary big" disabled={!sj50File || busy} onClick={onParse}>
-          {busy ? <><span className="spinner" /> Parsing…</> : "Parse SJ-50 →"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PiecesPane(props: {
-  pieces: Piece[];
-  updatePieceDiamond: (stock: string, patch: Record<string, string>) => void;
-  updatePieceTuning: (stock: string, patch: Record<string, string>) => void;
-  onContinue: () => void;
-}) {
-  const { pieces, updatePieceDiamond, updatePieceTuning, onContinue } = props;
-  return (
-    <div>
-      <h2>Pieces (parsed from SJ-50)</h2>
-      <p className="hint">Fill diamond details and per-piece tuning values where the raw file didn&apos;t carry them. Auto-saves on blur.</p>
-      <div className="finding soft" style={{ marginBottom: 12 }}>
-        <strong>About &quot;Base lock USD&quot; (AR)</strong> — in the manual workbook, Accounts types a per-piece
-        base-gold-lock value (cell AR / AQ) to control value addition %. Leave blank to let the module
-        compute without the lock; the value-addition ratio will be higher than usual. Set it to the piece&apos;s
-        base cost from the prior quote or your tuned value to match the manual output.
-      </div>
-      <div className="table-wrap cards">
-        <table>
-          <thead>
-            <tr>
-              <th>Stock</th><th>Style</th><th>Item</th><th>KT</th><th>Color</th><th>Qty</th>
-              <th>Gross</th><th>Dia pcs</th><th>Dia cts</th>
-              <th>Dia certificate</th><th>Dia grade</th><th>Dia USD/ct</th>
-              <th>Base lock USD <span className="muted">(AR)</span></th>
-              <th>Addon USD <span className="muted">(AZ)</span></th>
-              <th>HSN hint</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pieces.map((p) => {
-              const d0 = p.diamonds[0];
-              const diaPcs = p.diamonds.reduce((a, d) => a + d.pcs, 0);
-              const diaCts = p.diamonds.reduce((a, d) => a.add(d.cts), new Decimal(0));
-              return (
-                <tr key={p.stock_no}>
-                  <td data-label="Stock">{p.stock_no}</td>
-                  <td data-label="Style">{p.cust_style_no}</td>
-                  <td data-label="Item">{p.item}</td>
-                  <td data-label="KT">{p.kt}</td>
-                  <td data-label="Color">{p.color}</td>
-                  <td data-label="Qty">{p.qty}</td>
-                  <td data-label="Gross">{p.gross_wt.toFixed(3)}</td>
-                  <td data-label="Dia pcs">{diaPcs}</td>
-                  <td data-label="Dia cts">{diaCts.toFixed(2)}</td>
-                  <td data-label="Certificate"><input placeholder="IGI-LG…" defaultValue={d0?.certificate_no ?? ""}
-                             onBlur={(e) => updatePieceDiamond(p.stock_no, { certificate_no: e.target.value })} /></td>
-                  <td data-label="Grade"><input placeholder="D-VVS1" defaultValue={d0?.color_clarity ?? ""}
-                             onBlur={(e) => updatePieceDiamond(p.stock_no, { color_clarity: e.target.value })} /></td>
-                  <td data-label="USD/ct"><input placeholder="60.00" defaultValue={d0?.rate_usd_per_ct?.toString() ?? ""}
-                             onBlur={(e) => updatePieceDiamond(p.stock_no, { rate_usd_per_ct: e.target.value })} /></td>
-                  <td data-label="Base lock USD"><input placeholder="(blank = 0)" inputMode="decimal"
-                             defaultValue={p.base_gold_lock_usd?.toString() ?? ""}
-                             onBlur={(e) => updatePieceTuning(p.stock_no, { base_gold_lock_usd: e.target.value })} /></td>
-                  <td data-label="Addon USD"><input placeholder="(default 10)" inputMode="decimal"
-                             defaultValue={p.fixed_addon_usd?.toString() ?? ""}
-                             onBlur={(e) => updatePieceTuning(p.stock_no, { fixed_addon_usd: e.target.value })} /></td>
-                  <td data-label="HSN hint">{p.jewellery_type.replace("gold_", "")}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="actions">
-        <button className="btn primary" onClick={onContinue}>Continue →</button>
-      </div>
-    </div>
-  );
-}
-
-function FormPane(props: { form: FormState; setForm: (f: FormState) => void; errors: FormErrors; onPreview: () => void; busy: boolean; }) {
-  const { form, setForm, errors, onPreview, busy } = props;
-  function u<K extends keyof FormState>(k: K, v: FormState[K]) { setForm({ ...form, [k]: v }); }
-  function pick(k: keyof FormState) {
-    return (o: LookupOption | null) => u(k, (o?.id ?? null) as FormState[typeof k]);
-  }
-  function fieldCls(k: keyof FormState) { return errors[k] ? "invalid" : ""; }
-  function err(k: keyof FormState) { return <div className="err">{errors[k] ?? ""}</div>; }
-  return (
-    <div>
-      <h2>Per-invoice inputs</h2>
-      <p className="hint">Required fields are marked. Dropdowns remember new values — just type and pick &quot;+ Add&quot;.</p>
-      <div className="grid">
-        <label>Invoice number *
-          <input className={fieldCls("invoice_number")} value={form.invoice_number} onChange={(e) => u("invoice_number", e.target.value)} placeholder="EXP570/2026-27" />
-          {err("invoice_number")}
-        </label>
-        <label>Invoice date *
-          <input className={fieldCls("invoice_date")} type="date" value={form.invoice_date} onChange={(e) => u("invoice_date", e.target.value)} />
-          {err("invoice_date")}
-        </label>
-        <label>Buyer *
-          <Dropdown lookupKey="buyers" value={form.buyer_id} onChange={pick("buyer_id")} invalid={!!errors.buyer_id} />
-          {err("buyer_id")}
-        </label>
-        <label>Bank *
-          <Dropdown lookupKey="banks" value={form.bank_id} onChange={pick("bank_id")} invalid={!!errors.bank_id} />
-          {err("bank_id")}
-        </label>
-        <label>Payment terms
-          <Dropdown lookupKey="payment_terms" value={form.terms_id} onChange={pick("terms_id")} />
-        </label>
-        <label>Pre-carriage
-          <Dropdown lookupKey="freight_carriers" value={form.pre_carriage_id} onChange={pick("pre_carriage_id")} />
-        </label>
-        <label>Vessel / Flight
-          <Dropdown lookupKey="freight_modes" value={form.flight_mode_id} onChange={pick("flight_mode_id")} />
-        </label>
-        <label>Port of Loading
-          <Dropdown lookupKey="ports" value={form.port_of_loading_id} onChange={pick("port_of_loading_id")} />
-        </label>
-        <label>Preferential agreement
-          <Dropdown lookupKey="preferential_agreements" value={form.preferential_agreement_id} onChange={pick("preferential_agreement_id")} />
-        </label>
-        <label>Gold rate (USD / troy oz) *
-          <input className={fieldCls("gold_rate_usd_per_troy_oz")} value={form.gold_rate_usd_per_troy_oz} onChange={(e) => u("gold_rate_usd_per_troy_oz", e.target.value)} placeholder="4662.4965" inputMode="decimal" />
-          {err("gold_rate_usd_per_troy_oz")}
-        </label>
-        <label>Gold purity *
-          <input className={fieldCls("gold_purity")} value={form.gold_purity} onChange={(e) => u("gold_purity", e.target.value)} inputMode="decimal" />
-          {err("gold_purity")}
-        </label>
-        <label>Gold purchase party
-          <input value={form.gold_purchase_party} onChange={(e) => u("gold_purchase_party", e.target.value)} />
-        </label>
-        <label>Gold purchase invoice # *
-          <input className={fieldCls("gold_purchase_invoice_no")} value={form.gold_purchase_invoice_no} onChange={(e) => u("gold_purchase_invoice_no", e.target.value)} placeholder="OX26100MUM1059" />
-          {err("gold_purchase_invoice_no")}
-        </label>
-        <label>Gold purchase date
-          <input type="date" value={form.gold_purchase_date} onChange={(e) => u("gold_purchase_date", e.target.value)} />
-        </label>
-        <label>INR → USD rate *
-          <input className={fieldCls("inr_usd_rate")} value={form.inr_usd_rate} onChange={(e) => u("inr_usd_rate", e.target.value)} placeholder="95.25" inputMode="decimal" />
-          {err("inr_usd_rate")}
-        </label>
-        <label>Package gross wt (kg) *
-          <input className={fieldCls("package_gross_wt_kg")} value={form.package_gross_wt_kg} onChange={(e) => u("package_gross_wt_kg", e.target.value)} inputMode="decimal" />
-          {err("package_gross_wt_kg")}
-        </label>
-        <label>Container no.
-          <input value={form.container_number} onChange={(e) => u("container_number", e.target.value)} inputMode="numeric" />
-        </label>
-        <label>Wastage % override
-          <input value={form.wastage_pct_override} onChange={(e) => u("wastage_pct_override", e.target.value)} placeholder="(default from HSN)" inputMode="decimal" />
-        </label>
-        <label>Discount (USD)
-          <input value={form.discount_usd} onChange={(e) => u("discount_usd", e.target.value)} inputMode="decimal" />
-        </label>
-        <label>Freight (USD)
-          <input value={form.freight_usd} onChange={(e) => u("freight_usd", e.target.value)} inputMode="decimal" />
-        </label>
-        <label>Insurance (USD)
-          <input value={form.insurance_usd} onChange={(e) => u("insurance_usd", e.target.value)} inputMode="decimal" />
-        </label>
-      </div>
-      <div className="actions">
-        <button className="btn primary big" onClick={onPreview} disabled={busy}>
-          {busy ? <><span className="spinner" /> Computing…</> : "Preview totals →"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ReviewPane(props: {
-  lots: Lot[]; totals: { usd: Decimal; inr: Decimal } | null;
-  report: ValidationReport | null; onBack: () => void; onContinue: () => void;
-}) {
-  const { lots, totals, report, onBack, onContinue } = props;
-  const blocked = report ? isBlocked(report) : true;
-  if (!totals) return <SkelRows count={4} />;
-  return (
-    <div>
-      <h2>Review</h2>
-      <div className="summary">
-        <div className="row"><span className="k">Pieces</span><span className="v">{lots.reduce((a, l) => a + l.pieces.reduce((aa, p) => aa + p.qty, 0), 0)}</span></div>
-        <div className="row"><span className="k">Lots</span><span className="v">{lots.length}</span></div>
-        <div className="row"><span className="k">Total USD</span><span className="v">${totals.usd.toFixed(2)}</span></div>
-        <div className="row"><span className="k">Total INR</span><span className="v">₹{totals.inr.toFixed(2)}</span></div>
-      </div>
-      <h3 className="section">Lots</h3>
-      <div className="table-wrap cards">
-        <table>
-          <thead>
-            <tr><th>#</th><th>KT</th><th>Color</th><th>HSN</th><th>Pcs</th>
-              <th>Gross</th><th>Net</th><th>Gold USD</th><th>Studd USD</th>
-              <th>MFG USD</th><th>Total USD</th><th>V-add %</th></tr>
-          </thead>
-          <tbody>
-            {lots.map((l) => {
-              const t = l.totals!;
-              const studd = t.diamond_value_usd.add(t.stone_value_usd);
-              return (
-                <tr key={l.lot_no}>
-                  <td data-label="#">{l.lot_no}</td><td data-label="KT">{l.kt}</td><td data-label="Color">{l.color}</td><td data-label="HSN">{l.hsn_code}</td>
-                  <td data-label="Pcs">{l.pieces.reduce((a, p) => a + p.qty, 0)}</td>
-                  <td data-label="Gross">{t.gross_wt.toFixed(3)}</td><td data-label="Net">{t.net_wt.toFixed(3)}</td>
-                  <td data-label="Gold USD">${t.gold_value_usd.toFixed(2)}</td>
-                  <td data-label="Studd USD">${studd.toFixed(2)}</td>
-                  <td data-label="MFG USD">${t.mfg_cost_usd.toFixed(2)}</td>
-                  <td data-label="Total USD">${t.total_usd.toFixed(2)}</td>
-                  <td data-label="V-add %">{t.value_addition_ratio.mul(100).toFixed(2)}%</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <h3 className="section">Validation</h3>
-      {report?.findings.map((f) => (
-        <div key={f.code} className={clsx("finding", f.passed ? "passed" : f.severity)}>
-          <strong><code>{f.code}</code></strong> · {f.message}
-          {f.detail ? <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{JSON.stringify(f.detail).slice(0, 200)}</div> : null}
-        </div>
-      ))}
-      <div className="actions">
-        <button className="btn" onClick={onBack}>← Edit inputs</button>
-        <button className="btn primary" onClick={onContinue} disabled={blocked}>
-          {blocked ? "Fix hard failures first" : "Looks good →"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function GeneratePane(props: {
-  busy: boolean;
-  result: { invoice_id: string } | null;
-  onGenerate: () => void;
-  onNewInvoice: () => void;
-}) {
-  const { busy, result, onGenerate, onNewInvoice } = props;
-  return (
-    <div>
-      <h2>Generate the invoice</h2>
-      <p>Clicking Generate will:</p>
-      <ol>
-        <li>Build the <code>.xlsx</code> in your browser via ExcelJS.</li>
-        <li>Upload the raw SJ-50 (if provided), the vendor invoice (if provided), and the generated file into Supabase Storage.</li>
-        <li>Insert rows into <code>invoices</code> → <code>invoice_lots</code> → <code>invoice_pieces</code> → <code>invoice_diamonds</code> → <code>stones_register</code> → <code>audit_log</code>.</li>
-        <li>Download the <code>.xlsx</code> to your Downloads folder.</li>
-      </ol>
-      {!result && (
-        <div className="actions">
-          <button className="btn primary big" onClick={onGenerate} disabled={busy}>
-            {busy ? <><span className="spinner" /> Generating…</> : "Generate"}
-          </button>
-        </div>
-      )}
-      {busy && (
-        <div style={{ marginTop: 16 }}>
-          <Skel w="60%" />
-          <div style={{ height: 8 }} />
-          <Skel w="40%" />
-        </div>
-      )}
-      {result && (
-        <div className="result-box">
-          <strong>✓ Generated.</strong> Invoice stored as <code>{result.invoice_id}</code>. The <code>.xlsx</code> has downloaded; see the Dashboard tab to re-download later.
-          <div style={{ marginTop: 12 }}>
-            <button className="btn primary" onClick={onNewInvoice}>+ New invoice</button>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog open={confirmReset} icon={RotateCcw} title="Start a new invoice?"
+                     body="This clears the loaded pieces, the rates you typed and the details form. Saved invoices are not affected."
+                     confirmLabel="Start over" danger onConfirm={startNew} onCancel={() => setConfirmReset(false)} />
     </div>
   );
 }

@@ -26,7 +26,8 @@ data persistence, file storage, and auth.
 **1. Supabase project**
 
 Create a new Supabase project. In the SQL editor, paste and run
-`supabase/schema.sql`. It creates every table, enables row-level
+`supabase/schema.sql`, then every file in `supabase/migrations/` in date
+order (existing projects: just the migrations not yet run). It creates every table, enables row-level
 security, and seeds the lookup tables (buyers, banks, HSN, etc.) from
 the sample invoice data.
 
@@ -40,7 +41,6 @@ or `"admin"` can write.
 **2. Local dev**
 
 ```bash
-cd web
 npm install
 cp .env.example .env   # fill in VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
 npm run dev
@@ -55,6 +55,14 @@ Open http://127.0.0.1:5173.
   publish dir `dist`.
 - Add the four `VITE_*` env vars in Netlify → Site settings → Env.
 - `netlify.toml` sets SPA redirects and security headers.
+
+## Input file
+
+Upload the `SDJ-JB-<nnn> # 26-27 # DCJ # Dt-<date>.xls` file from Swan. The
+module reads **only its "Packing List" sheet** (sheet 2); the tax-invoice
+sheet is ignored. Older `SJ-50 … pcs.xls` packing lists also work. Anything
+the sheet does not carry (certificates, grades, USD/ct, buyer, bank, gold
+rate, exchange rates, package weight) is entered in the app.
 
 ## Overridable dropdown fields
 
@@ -111,25 +119,26 @@ web/
     ├── storage/                      Supabase CRUD wrappers
     ├── hooks/                        React data hooks
     ├── components/                   UI
-    └── styles/                       VS-Code-light theme
+    └── styles/                       DIACROWN finance-console theme
 ```
 
 v0.1 goals: everything from the Python module (`../module/`) ported to
 TypeScript, running in the browser, with the Supabase persistence layer
 and overridable dropdowns.
 
-## Local sanity test
-
-Before deploying, you can run the full generator pipeline against a real
-SJ-50 raw file to see what the output looks like:
+## Tests and the local diff tool
 
 ```bash
-npm install
-npx tsx scripts/local-run.ts path/to/some-sj-50.xls
-# writes generated-by-ts.xlsx next to the input
+npm test          # rebuilds EXP535 / EXP546 / EXP615 from the raw files and checks them to the cent
+# newer samples still in Downloads?  JWY_EXTRA_SAMPLES_DIR="C:/Users/<you>/Downloads" npm test
+npm run local-run -- "../Raw Data Sheet From Jwy/SJ-50 # DCJ # 1.10.2026 # 10 pcs.xls" \
+  "../Raw Data Sheet From Jwy/SDJ-JB-045 # 26-27 # DCJ # Dt-30.09.2026.xls" \
+  --ref "../Previous Export Invoices Reference/INVOICE NO. EXP535-2026-27 (B-JEW) MASTER DETAILS.xls" \
+  --ref-gross --fx 95.35 --labour-fx 95.1 --inv EXP535/2026-27 --date 2026-10-01
 ```
 
-Open the generated xlsx side-by-side with a real master-details workbook
-to see structural differences. The output is functionally correct
-(right totals, right lots) but not yet byte-identical to the manual
-workbook — iterate on `src/generators/xlsx.ts` based on what Accounts flags.
+The sample files are business data and live outside the repo (default: the
+repo's parent folder; override with `JWY_SAMPLES_DIR`). Tests skip when they
+are absent. `--ref` copies the hand-typed studding details from a manual
+workbook and prints a per-piece diff (gross, net, AR, AK) plus the grand
+total delta.
